@@ -653,7 +653,7 @@ function returnToLobby(status) {
   $('.match-picker').classList.remove('hidden');
   $('.online-controls').classList.remove('hidden');
   overlay.classList.remove('hidden');
-  startButton.textContent = 'PLAY VS BOTS';
+  updateStartButtonLabel();
   onlineMatchButton.disabled = false;
   onlineMatchButton.textContent = 'FIND A GAME';
   multiplayerStatus.textContent = status;
@@ -2023,6 +2023,10 @@ function startGame() {
     : 'Collect iron at your generator. Keep an eye on your pig!');
 }
 
+function updateStartButtonLabel() {
+  startButton.textContent = `START · ${matchModes[selectedMatchMode].label} VS BOTS`;
+}
+
 document.addEventListener('pointerlockchange', () => {
   if (hasGamePointerLock() && state.mode === 'playing') {
     state.pointerLockPending = false;
@@ -2206,6 +2210,7 @@ for (const button of document.querySelectorAll('[data-match-mode]')) {
       card.setAttribute('aria-pressed', String(selected));
     }
     overlayCopy.textContent = `${matchModes[selectedMatchMode].label}: protect your pig, gather resources, and build your own way across the void.`;
+    updateStartButtonLabel();
   });
 }
 $('#close-shop').addEventListener('click', closeShop);
@@ -2237,6 +2242,7 @@ $('#fov-value').textContent = `${fieldOfView}°`;
 window.addEventListener('keydown', handleRebind, true);
 renderBindings();
 setTouchControls(touchControlsEnabled, false);
+updateStartButtonLabel();
 
 const crosshair = $('#crosshair');
 let lastAimTarget = null;

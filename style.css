@@ -62,20 +62,21 @@ button { font: inherit; }
 .interaction { position: absolute; bottom: 104px; left: 50%; transform: translateX(-50%); padding: 7px 12px; border-radius: 6px; background: #131629d9; font-size: 12px; color: #edf0f5; white-space: nowrap; }
 .notice { position: absolute; top: 75px; left: 50%; transform: translateX(-50%); color: #d9dbeb; padding: 9px 14px; background: #171b30ed; border: 1px solid var(--line); border-radius: 2px; font-size: 12px; opacity: 0; transition: opacity .2s; pointer-events: none; }
 .notice.show { opacity: 1; }
-.overlay { position: absolute; inset: 0; display: grid; place-items: center; overflow-y: auto; padding: 18px 0; background: linear-gradient(180deg, #d5f2ff35 0%, #10243bc9 100%); }
+.overlay { position: absolute; z-index: 10; inset: 0; display: grid; place-items: center; overflow-y: auto; padding: 18px 0; background: linear-gradient(180deg, #d5f2ff35 0%, #10243bc9 100%); pointer-events: auto; touch-action: pan-y; }
 .overlay-card { width: min(680px, calc(100% - 34px)); text-align: center; padding: 26px 34px 24px; border: 2px solid #d9f3ff66; border-radius: 5px; background: linear-gradient(160deg, #23466aF5, #111e35f7); box-shadow: 0 6px 0 #10233c, 0 25px 80px #173b5970; }
 .pig-emblem { font-size: 48px; margin-bottom: 5px; filter: drop-shadow(0 7px 12px #fb6d8060); }
 h1 { margin: 9px 0 11px; font-size: clamp(28px, 6vw, 46px); letter-spacing: .04em; }
 .overlay-copy { margin: 0 auto 23px; color: #b9bdce; font-size: 14px; }
 .match-picker { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 0 0 20px; }
-.match-card { display: grid; justify-items: center; gap: 5px; min-height: 92px; padding: 12px 8px; border: 1px solid #d9f3ff4d; border-radius: 4px; color: #ecf8ff; background: #ffffff0a; cursor: pointer; transition: background .15s, border-color .15s, transform .15s; }
+.match-card { display: grid; justify-items: center; gap: 5px; min-height: 92px; padding: 12px 8px; border: 1px solid #d9f3ff4d; border-radius: 4px; color: #ecf8ff; background: #ffffff0a; cursor: pointer; transition: background .15s, border-color .15s, transform .15s; touch-action: manipulation; }
 .match-card:hover { border-color: #b8e9ff; background: #ffffff16; transform: translateY(-2px); }
 .match-card.selected { border: 2px solid #9af0cf; background: #71e4b228; box-shadow: inset 0 0 18px #71e4b21a; }
 .match-card strong { font-size: 17px; letter-spacing: .04em; }
 .match-card span { color: #d9edf8; font-size: 12px; }
 .match-card small { color: #a9c5d6; font-size: 10px; }
-.primary-button { border: 2px solid #bbffda; border-radius: 2px; padding: 13px 37px; color: #101426; background: var(--mint); font-size: 13px; font-weight: 700; letter-spacing: .1em; cursor: pointer; box-shadow: 0 4px 0 #318158; }
+.primary-button { border: 2px solid #bbffda; border-radius: 2px; padding: 13px 37px; color: #101426; background: var(--mint); font-size: 13px; font-weight: 700; letter-spacing: .1em; cursor: pointer; box-shadow: 0 4px 0 #318158; touch-action: manipulation; }
 .primary-button:hover { background: #a5ffd0; transform: translateY(-1px); box-shadow: 0 5px 0 #318158; }
+.lobby-primary { display: block; width: min(100%, 340px); min-height: 50px; margin: -7px auto 18px; }
 .secondary-button { border: 1px solid #ffffff45; border-radius: 2px; padding: 12px 21px; color: #e9edf8; background: #ffffff0d; font-size: 11px; font-weight: 700; letter-spacing: .08em; cursor: pointer; }
 .secondary-button:hover { background: #ffffff1b; }
 #menu-settings-button { margin-right: 8px; }
