@@ -79,13 +79,15 @@ h1 { margin: 9px 0 11px; font-size: clamp(28px, 6vw, 46px); letter-spacing: .04e
 .secondary-button { border: 1px solid #ffffff45; border-radius: 2px; padding: 12px 21px; color: #e9edf8; background: #ffffff0d; font-size: 11px; font-weight: 700; letter-spacing: .08em; cursor: pointer; }
 .secondary-button:hover { background: #ffffff1b; }
 #menu-settings-button { margin-right: 8px; }
+.launcher-entry { display: block; width: fit-content; margin: 13px auto 0; color: #c6e7f5; font: 10px 'DM Mono', monospace; letter-spacing: .08em; text-decoration: underline; text-underline-offset: 3px; }
+.launcher-entry:hover { color: #fff; }
 .online-controls { display: grid; gap: 7px; margin: 17px auto 0; max-width: 430px; text-align: left; }
-.online-controls > label { color: #b9cddb; font: 9px 'DM Mono', monospace; letter-spacing: .12em; }
-.online-controls input { width: 100%; border: 1px solid #d9f3ff4d; border-radius: 3px; padding: 9px 11px; color: #f4fbff; background: #101e31; font: 11px 'DM Mono', monospace; }
-.online-controls input:focus-visible { outline: 2px solid var(--mint); outline-offset: 2px; }
 .online-actions { display: flex; align-items: center; gap: 10px; }
 .online-actions .secondary-button { flex: 0 0 auto; padding: 10px 14px; }
 #multiplayer-status { color: #b9cddb; font-size: 10px; }
+.touch-toggle { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 12px auto 0; color: #d4e7f0; font: 10px 'DM Mono', monospace; letter-spacing: .06em; cursor: pointer; }
+.touch-toggle input { width: 17px; height: 17px; accent-color: var(--mint); }
+.settings-touch-toggle { justify-content: flex-start; margin: 0 0 20px; }
 .control-guide { border-top: 1px solid var(--line); margin-top: 26px; padding-top: 18px; display: flex; justify-content: center; flex-wrap: wrap; gap: 12px 18px; color: #b7bbca; font-size: 10px; }
 kbd { padding: 3px 5px; border: 1px solid #ffffff36; border-radius: 4px; background: #ffffff0c; color: #fff; font: 9px 'DM Mono', monospace; }
 .panel { position: absolute; z-index: 5; top: 50%; left: 50%; transform: translate(-50%,-50%); width: min(460px, calc(100% - 28px)); max-height: calc(100dvh - 24px); overflow-y: auto; padding: 23px; border: 2px solid #ffffff30; border-radius: 2px; background: var(--panel); box-shadow: 4px 4px 0 #080b17, 0 24px 90px #0009; }
@@ -112,6 +114,19 @@ kbd { padding: 3px 5px; border: 1px solid #ffffff36; border-radius: 4px; backgro
 .settings-actions .primary-button { padding: 10px 25px; }
 .toast { position: absolute; bottom: 104px; left: 50%; transform: translate(-50%, 8px); border: 1px solid var(--line); background: #121629eb; padding: 10px 15px; border-radius: 7px; font-size: 12px; opacity: 0; transition: .2s; pointer-events: none; white-space: nowrap; }
 .toast.show { opacity: 1; transform: translate(-50%,0); }
+.queue-status { position: absolute; z-index: 6; top: 78px; right: 18px; display: grid; gap: 7px; width: min(300px, calc(100% - 36px)); padding: 12px; border: 1px solid #9af0cf88; background: #101d30ed; box-shadow: 3px 3px 0 #080b17; }
+.queue-status strong { color: var(--mint); font: 10px 'DM Mono', monospace; letter-spacing: .1em; }
+.queue-status span { color: #d9e6ef; font-size: 11px; }
+.queue-status button { justify-self: start; border: 1px solid #ffffff45; padding: 7px 11px; color: white; background: #ffffff10; font: 10px 'DM Mono', monospace; cursor: pointer; }
+.touch-controls { position: absolute; z-index: 4; inset: 0; pointer-events: none; }
+.touch-look-area { position: absolute; top: 64px; right: 0; bottom: 220px; width: 52%; pointer-events: auto; touch-action: none; }
+.touch-joystick { position: absolute; bottom: 98px; left: 20px; width: 138px; height: 138px; border: 2px solid #e8f8ff8a; border-radius: 50%; background: #10142655; box-shadow: inset 0 0 0 12px #d9f3ff12; pointer-events: auto; touch-action: none; user-select: none; }
+.joystick-label { position: absolute; inset: auto 0 11px; color: #ffffffbb; text-align: center; font: 9px 'DM Mono', monospace; letter-spacing: .1em; pointer-events: none; }
+.joystick-knob { position: absolute; top: 50%; left: 50%; width: 48px; height: 48px; margin: -24px; border: 2px solid #ffffffaa; border-radius: 50%; background: #76f2b288; box-shadow: 0 2px 8px #0008; pointer-events: none; }
+.touch-actions { position: absolute; right: 18px; bottom: 98px; display: grid; grid-template-columns: repeat(2, minmax(68px, 84px)); gap: 7px; pointer-events: auto; }
+.touch-action { min-height: 44px; border: 1px solid #d9f3ff99; border-radius: 4px; color: #fff; background: #101426cc; box-shadow: 0 2px 5px #0008; font: 9px 'DM Mono', monospace; touch-action: manipulation; user-select: none; }
+.touch-action:active, .touch-action[aria-pressed="true"] { border-color: var(--mint); background: #28795ca8; }
+.touch-controls.waiting .match-only-touch { display: none; }
 #version { position: absolute; bottom: 8px; right: 12px; color: #ffffff64; font: 9px 'DM Mono', monospace; letter-spacing: .1em; }
 
 @media (max-width: 650px) {
@@ -136,4 +151,8 @@ kbd { padding: 3px 5px; border: 1px solid #ffffff36; border-radius: 4px; backgro
   .slot .slot-count { right: 4px; bottom: 3px; font-size: 9px; }
   .top-right { gap: 5px; }
   .stance-indicator { font-size: 7px; }
+  .touch-joystick { left: 12px; width: 118px; height: 118px; }
+  .touch-actions { right: 10px; grid-template-columns: repeat(2, 66px); gap: 5px; }
+  .touch-action { min-height: 40px; font-size: 8px; }
+  .queue-status { top: 70px; right: 10px; }
 }

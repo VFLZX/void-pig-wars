@@ -74,19 +74,19 @@
           </div>
           <button id="menu-settings-button" class="secondary-button">SETTINGS</button>
           <button id="start-button" class="primary-button">PLAY VS BOTS</button>
+          <a class="launcher-entry" href="./launcher.html">OPEN VOXEL LAUNCHER</a>
           <div class="online-controls">
-            <label for="multiplayer-server">MULTIPLAYER SERVER</label>
-            <input id="multiplayer-server" type="url" spellcheck="false" autocomplete="url" placeholder="wss://your-server.example" />
             <div class="online-actions">
-              <button id="online-match-button" class="secondary-button">FIND ONLINE MATCH</button>
-              <span id="multiplayer-status" role="status" aria-live="polite">Online play needs a WebSocket server.</span>
+              <button id="online-match-button" class="secondary-button">FIND A GAME</button>
+              <span id="multiplayer-status" role="status" aria-live="polite">Join matchmaking to find other players.</span>
             </div>
           </div>
+          <label class="touch-toggle"><input id="touch-controls-toggle" type="checkbox" /> ON-SCREEN TOUCH CONTROLS</label>
           <div class="control-guide">
             <span><kbd>W A S D</kbd> Move</span><span><kbd>SHIFT</kbd> Sneak safely</span><span><kbd>SPACE</kbd> Jump</span>
-            <span><kbd>MOUSE / DRAG</kbd> Look</span><span><kbd>ARROWS</kbd> Look backup</span>
-            <span><kbd>CLICK / F</kbd> Attack</span><span><kbd>RIGHT CLICK / G</kbd> Build</span>
-            <span><kbd>E</kbd> Shop</span><span><kbd>H</kbd> Utility</span><span><kbd>1–7</kbd> Hotbar</span>
+            <span><kbd>MOUSE / TOUCH DRAG</kbd> Look</span><span><kbd>ARROWS</kbd> Keyboard look</span>
+            <span><kbd>LEFT CLICK / TAP</kbd> Attack</span><span><kbd>RIGHT CLICK / BUILD</kbd> Place</span>
+            <span><kbd>E</kbd> Shop</span><span><kbd>1–7</kbd> Hotbar</span>
           </div>
         </div>
       </section>
@@ -100,6 +100,9 @@
           <span>Field of view <strong id="fov-value">76°</strong></span>
           <input id="fov-slider" type="range" min="60" max="105" step="1" value="76" />
         </label>
+        <label class="touch-toggle settings-touch-toggle">
+          <input id="touch-controls-settings" type="checkbox" /> ON-SCREEN TOUCH CONTROLS
+        </label>
         <h3 class="settings-section-title">KEYBOARD BINDS <small>Click a key, then press its replacement</small></h3>
         <div id="binding-list" class="binding-list"></div>
         <div class="settings-actions">
@@ -109,6 +112,26 @@
       </section>
 
       <div id="toast" class="toast"></div>
+      <div id="queue-status" class="queue-status hidden" role="status" aria-live="polite">
+        <strong>FINDING A GAME</strong>
+        <span id="queue-status-copy">Connecting to matchmaking…</span>
+        <button id="cancel-matchmaking" type="button">CANCEL</button>
+      </div>
+      <div id="touch-controls" class="touch-controls hidden" aria-label="Touch controls">
+        <div id="touch-look-area" class="touch-look-area" aria-label="Drag to look around"></div>
+        <div id="touch-joystick" class="touch-joystick" aria-label="Movement joystick">
+          <span class="joystick-label">MOVE</span>
+          <div id="joystick-knob" class="joystick-knob"></div>
+        </div>
+        <div class="touch-actions">
+          <button type="button" data-touch-action="attack" class="touch-action match-only-touch">ATTACK</button>
+          <button type="button" data-touch-action="build" class="touch-action match-only-touch">BUILD</button>
+          <button type="button" data-touch-action="jump" class="touch-action">JUMP</button>
+          <button type="button" data-touch-action="sneak" class="touch-action">SNEAK</button>
+          <button type="button" data-touch-action="shop" class="touch-action match-only-touch">SHOP</button>
+          <button type="button" data-touch-action="utility" class="touch-action match-only-touch">USE</button>
+        </div>
+      </div>
       <div id="version">EARLY ACCESS · 1.0</div>
     </main>
     <script type="module" src="./game.js"></script>

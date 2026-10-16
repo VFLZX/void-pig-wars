@@ -8,12 +8,22 @@ const overlayTitle = $('#overlay-title');
 const overlayCopy = $('#overlay-copy');
 const startButton = $('#start-button');
 const onlineMatchButton = $('#online-match-button');
-const multiplayerServerInput = $('#multiplayer-server');
 const multiplayerStatus = $('#multiplayer-status');
+const queueStatusPanel = $('#queue-status');
+const queueStatusCopy = $('#queue-status-copy');
+const touchControls = $('#touch-controls');
+const touchControlsToggle = $('#touch-controls-toggle');
+const touchControlsSettingsToggle = $('#touch-controls-settings');
+const touchLookArea = $('#touch-look-area');
+const touchJoystick = $('#touch-joystick');
+const joystickKnob = $('#joystick-knob');
 const shopPanel = $('#shop');
 const shopItems = $('#shop-items');
 const settingsPanel = $('#settings');
 const keys = new Set();
+let touchControlsEnabled = false;
+let joystickPointerId = null;
+let lookPointerId = null;
 let selectedMatchMode = 'ffa';
 let localTeamId = 'green';
 let multiplayerSocket = null;
@@ -23,18 +33,26 @@ let onlinePlayerId = null;
 let lastNetworkMoveAt = 0;
 const remotePlayers = new Map();
 const networkBlockKeys = new Set();
-const MULTIPLAYER_SERVER_KEY = 'void-pig-wars-multiplayer-server-v1';
 const DEFAULT_BINDINGS = {
   forward: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD',
-  jump: 'Space', sneak: 'ShiftLeft', attack: 'KeyF', place: 'KeyG',
-  shop: 'KeyE', utility: 'KeyH',
+  jump: 'Space', sneak: 'ShiftLeft', shop: 'KeyE',
   slot1: 'Digit1', slot2: 'Digit2', slot3: 'Digit3', slot4: 'Digit4',
   slot5: 'Digit5', slot6: 'Digit6', slot7: 'Digit7',
 };
+function keyboardCode(event) {
+  if (event.code && event.code !== 'Unidentified') return event.code;
+  if (event.key === ' ') return 'Space';
+  if (/^[a-z]$/i.test(event.key)) return `Key${event.key.toUpperCase()}`;
+  if (/^[0-9]$/.test(event.key)) return `Digit${event.key}`;
+  if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Escape', 'Enter', 'Tab'].includes(event.key)) {
+    return event.key;
+  }
+  if (event.key === 'Shift') return event.location === 2 ? 'ShiftRight' : 'ShiftLeft';
+  return '';
+}
 const BINDING_LABELS = {
   forward: 'Move forward', back: 'Move backward', left: 'Move left', right: 'Move right',
-  jump: 'Jump', sneak: 'Sneak / edge guard', attack: 'Attack', place: 'Place block',
-  shop: 'Open shop', utility: 'Use selected item',
+  jump: 'Jump', sneak: 'Sneak / edge guard', shop: 'Open shop',
   slot1: 'Hotbar slot 1', slot2: 'Hotbar slot 2', slot3: 'Hotbar slot 3',
   slot4: 'Hotbar slot 4', slot5: 'Hotbar slot 5', slot6: 'Hotbar slot 6',
   slot7: 'Hotbar slot 7',
@@ -53,6 +71,7 @@ try {
     if (Number.isInteger(saved.fieldOfView) && saved.fieldOfView >= 60 && saved.fieldOfView <= 105) {
       fieldOfView = saved.fieldOfView;
     }
+    touchControlsEnabled = saved.touchControlsEnabled === true;
   }
 } catch (error) {
   console.warn('Could not load saved game settings.', error);
@@ -158,16 +177,12 @@ function playerTeam() {
   return teams.find((team) => team.id === localTeamId) ?? teams[0];
 }
 
-let savedMultiplayerServer = '';
-try {
-  savedMultiplayerServer = localStorage.getItem(MULTIPLAYER_SERVER_KEY) || '';
-} catch (error) {
-  console.warn('Could not load the saved multiplayer server address.', error);
+function multiplayerServerUrl() {
+  if (['localhost', '127.0.0.1'].includes(window.location.hostname)) {
+    return `ws://${window.location.hostname}:8765`;
+  }
+  return 'wss://void-pig-wars-multiplayer.onrender.com';
 }
-multiplayerServerInput.value = savedMultiplayerServer ||
-  (['localhost', '127.0.0.1'].includes(window.location.hostname)
-    ? `ws://${window.location.hostname}:8765`
-    : '');
 
 const state = {
   mode: 'menu',
@@ -198,6 +213,10 @@ const state = {
   pointerLockPending: false,
   lastPointerX: 0,
   lastPointerY: 0,
+  touchMoveX: 0,
+  touchMoveY: 0,
+  touchSneaking: false,
+  touchJumpPressed: false,
 };
 
 const playerPosition = new THREE.Vector3(-42, 1.65, 0);
@@ -231,13 +250,6 @@ function createIsland(x, z, team) {
   const top = makeMesh(new THREE.BoxGeometry(24, 0.24, 24), materials.terrainGrass, islandGroup, 0, -0.12, 0);
   addWorldSurface(x, z, 24, 24, 0, top);
   if (team) worldSurfaces[worldSurfaces.length - 1].teamId = team.id;
-  if (team) {
-    const trimMaterial = new THREE.MeshLambertMaterial({ color: team.dark, flatShading: true });
-    for (let i = -1; i <= 1; i += 2) {
-      makeMesh(new THREE.BoxGeometry(24, 0.35, 0.32), trimMaterial, islandGroup, 0, 0.12, i * 11.85);
-      makeMesh(new THREE.BoxGeometry(0.32, 0.35, 24), trimMaterial, islandGroup, i * 11.85, 0.12, 0);
-    }
-  }
 }
 
 function addSpriteLabel(text, color, parent, x, y, z, width = 5) {
@@ -445,9 +457,8 @@ function applyNetworkBlock(block) {
 function applyNetworkState(networkState) {
   for (const block of networkState.blocks || []) applyNetworkBlock(block);
   const playersByTeam = new Map();
-  let connectedPlayers = 0;
+  const connectedPlayers = (networkState.players || []).filter((player) => player.connected).length;
   for (const player of networkState.players || []) {
-    if (player.connected) connectedPlayers++;
     const teamPlayers = playersByTeam.get(player.teamId) || [];
     teamPlayers.push(player);
     playersByTeam.set(player.teamId, teamPlayers);
@@ -469,7 +480,6 @@ function applyNetworkState(networkState) {
         state.velocityZ = 0;
         showToast('Respawned!');
       }
-      $('#network-indicator').textContent = `ONLINE · ${connectedPlayers}`;
       $('#health-text').textContent = String(player.health);
       $('#health-fill').style.width = `${player.health}%`;
     } else {
@@ -503,6 +513,8 @@ function applyNetworkState(networkState) {
     const teamPlayers = playersByTeam.get(team.id) || [];
     team.eliminated = !team.pig.alive && teamPlayers.every((player) => !player.alive);
   }
+
+  $('#network-indicator').textContent = `ONLINE · ${connectedPlayers}`;
   renderTeamStatus();
   if (networkState.winner && state.mode === 'playing') {
     endGame(networkState.winner === localTeamId);
@@ -534,10 +546,12 @@ function beginOnlineMatch(message) {
   state.velocityX = 0;
   state.velocityY = 0;
   state.velocityZ = 0;
+  resetTouchInput();
   state.lastIronGen = performance.now() / 1000;
   state.lastGoldGen = state.lastIronGen;
   state.lastCentralGen = state.lastIronGen;
   $('.match-picker').classList.add('hidden');
+  queueStatusPanel.classList.add('hidden');
   overlay.classList.add('hidden');
   hud.classList.remove('hidden');
   $('#network-indicator').classList.remove('hidden');
@@ -545,9 +559,10 @@ function beginOnlineMatch(message) {
   multiplayerStatus.textContent = `Connected to room ${onlineRoomId}.`;
   onlineMatchButton.textContent = 'IN ONLINE MATCH';
   onlineMatchButton.disabled = true;
+  updateTouchControlsVisibility();
   updateHotbar();
   applyNetworkState(message.state);
-  canvas.focus({ preventScroll: true });
+  focusGameCanvas();
   requestGamePointerLock();
   showNotice('Online match started. Fight the other players!');
 }
@@ -555,6 +570,7 @@ function beginOnlineMatch(message) {
 function handleMultiplayerMessage(message) {
   if (message.type === 'waiting') {
     multiplayerStatus.textContent = `Finding ${matchModes[message.mode].label}: ${message.players}/${message.needed} players.`;
+    queueStatusCopy.textContent = `${multiplayerStatus.textContent} Move around while you wait.`;
   } else if (message.type === 'match_start') {
     beginOnlineMatch(message);
   } else if (message.type === 'state') {
@@ -578,6 +594,7 @@ function handleMultiplayerMessage(message) {
     applyNetworkBlock(message.block);
   } else if (message.type === 'error') {
     multiplayerStatus.textContent = message.message;
+    queueStatusCopy.textContent = message.message;
   }
 }
 
@@ -587,45 +604,98 @@ function sendMultiplayerMessage(message) {
   }
 }
 
-function findOnlineMatch() {
+function startWaitingArea() {
+  state.mode = 'waiting';
+  state.started = true;
+  state.alive = true;
+  state.health = 100;
+  state.velocityX = 0;
+  state.velocityY = 0;
+  state.velocityZ = 0;
+  state.yaw = Math.PI / 4;
+  state.pitch = 0;
+  camera.position.set(8, 1.65, 8);
+  camera.rotation.set(0, state.yaw, 0);
+  for (const bot of entities) bot.group.visible = false;
+  $('.match-picker').classList.add('hidden');
+  $('.online-controls').classList.add('hidden');
+  overlay.classList.add('hidden');
+  hud.classList.remove('hidden');
+  queueStatusPanel.classList.remove('hidden');
+  queueStatusCopy.textContent = `Connecting to ${matchModes[selectedMatchMode].label} matchmaking…`;
+  $('#objective').textContent = `WAITING · ${matchModes[selectedMatchMode].label}`;
+  focusGameCanvas();
+  requestGamePointerLock();
+  updateTouchControlsVisibility();
+}
+
+function returnToLobby(status) {
+  if (hasGamePointerLock()) document.exitPointerLock?.();
+  keys.clear();
+  state.mode = 'menu';
+  state.started = false;
+  state.alive = true;
+  state.velocityX = 0;
+  state.velocityY = 0;
+  state.velocityZ = 0;
+  state.touchMoveX = 0;
+  state.touchMoveY = 0;
+  state.touchSneaking = false;
+  state.touchJumpPressed = false;
+  state.yaw = -Math.PI / 2;
+  state.pitch = 0;
+  camera.position.copy(playerPosition);
+  camera.rotation.set(state.pitch, state.yaw, 0);
+  configureMatchMode(selectedMatchMode);
+  resetTouchInput();
+  queueStatusPanel.classList.add('hidden');
+  hud.classList.add('hidden');
+  $('.match-picker').classList.remove('hidden');
+  $('.online-controls').classList.remove('hidden');
+  overlay.classList.remove('hidden');
+  startButton.textContent = 'PLAY VS BOTS';
+  onlineMatchButton.disabled = false;
+  onlineMatchButton.textContent = 'FIND A GAME';
+  multiplayerStatus.textContent = status;
+  updateTouchControlsVisibility();
+  onlineMatchButton.focus();
+}
+
+function cancelMatchmaking() {
   if (multiplayerSocket && !onlineMatch) {
     const socket = multiplayerSocket;
     multiplayerSocket = null;
     socket.close();
-    onlineMatchButton.textContent = 'FIND ONLINE MATCH';
-    multiplayerStatus.textContent = 'Matchmaking cancelled.';
+    returnToLobby('Matchmaking cancelled.');
+  }
+}
+
+function findOnlineMatch() {
+  if (multiplayerSocket && !onlineMatch) {
+    cancelMatchmaking();
     return;
   }
   if (onlineMatch) return;
-  let serverUrl;
-  try {
-    serverUrl = new URL(multiplayerServerInput.value.trim());
-  } catch {
-    multiplayerStatus.textContent = 'Enter the multiplayer WebSocket server URL first.';
-    return;
-  }
-  if (!['ws:', 'wss:'].includes(serverUrl.protocol)) {
-    multiplayerStatus.textContent = 'Server address must start with ws:// or wss://.';
-    return;
-  }
-  if (window.location.protocol === 'https:' && serverUrl.protocol !== 'wss:') {
-    multiplayerStatus.textContent = 'An HTTPS game page requires a secure wss:// server.';
-    return;
-  }
-  try {
-    localStorage.setItem(MULTIPLAYER_SERVER_KEY, serverUrl.toString());
-  } catch (error) {
-    console.warn('Could not save the multiplayer server address.', error);
-  }
   onlineMatchButton.disabled = false;
-  onlineMatchButton.textContent = 'CANCEL MATCHMAKING';
+  onlineMatchButton.textContent = 'CANCEL SEARCH';
   multiplayerStatus.textContent = 'Connecting to multiplayer server…';
-  const socket = new WebSocket(serverUrl.toString());
-  multiplayerSocket = socket;
+  queueStatusPanel.classList.remove('hidden');
+  try {
+    multiplayerSocket = new WebSocket(multiplayerServerUrl());
+  } catch (error) {
+    console.error('Could not open the matchmaking connection.', error);
+    queueStatusPanel.classList.add('hidden');
+    onlineMatchButton.textContent = 'FIND A GAME';
+    multiplayerStatus.textContent = 'Could not start matchmaking. Check the server deployment and retry.';
+    return;
+  }
+  const socket = multiplayerSocket;
+  startWaitingArea();
   socket.addEventListener('open', () => {
     if (multiplayerSocket !== socket) return;
     socket.send(JSON.stringify({ type: 'join', mode: selectedMatchMode }));
     multiplayerStatus.textContent = 'Connected. Joining matchmaking queue…';
+    queueStatusCopy.textContent = multiplayerStatus.textContent;
   });
   socket.addEventListener('message', (event) => {
     if (multiplayerSocket !== socket) return;
@@ -634,30 +704,34 @@ function findOnlineMatch() {
     } catch (error) {
       console.error('Could not process a multiplayer server message.', error);
       multiplayerStatus.textContent = 'Received an invalid message from the multiplayer server.';
+      queueStatusCopy.textContent = multiplayerStatus.textContent;
     }
   });
   socket.addEventListener('error', () => {
     if (multiplayerSocket === socket) {
-      multiplayerStatus.textContent = 'Could not connect. Check the server address and try again.';
+      multiplayerStatus.textContent = 'Could not connect to the matchmaking server. Try again later.';
+      queueStatusCopy.textContent = multiplayerStatus.textContent;
     }
   });
   socket.addEventListener('close', () => {
     if (multiplayerSocket !== socket) return;
     multiplayerSocket = null;
     onlineMatchButton.disabled = false;
-    onlineMatchButton.textContent = 'FIND ONLINE MATCH';
+    onlineMatchButton.textContent = 'FIND A GAME';
     if (onlineMatch) {
       state.mode = 'disconnected';
       $('#network-indicator').textContent = 'OFFLINE';
       overlayTitle.textContent = 'CONNECTION LOST';
       overlayCopy.textContent = 'The multiplayer server disconnected. Refresh to return to the lobby.';
       $('.match-picker').classList.add('hidden');
+      queueStatusPanel.classList.add('hidden');
       startButton.textContent = 'REFRESH';
       onlineMatchButton.classList.add('hidden');
       overlay.classList.remove('hidden');
       multiplayerStatus.textContent = 'Disconnected from the online match.';
+      updateTouchControlsVisibility();
     } else {
-      multiplayerStatus.textContent = 'Disconnected from matchmaking.';
+      returnToLobby('Connection lost while searching. Click Find a Game to retry.');
     }
   });
 }
@@ -993,14 +1067,23 @@ function hasGamePointerLock() {
   return document.pointerLockElement === canvas;
 }
 
+function focusGameCanvas() {
+  try {
+    canvas.focus({ preventScroll: true });
+  } catch {
+    canvas.focus();
+  }
+}
+
 function requestGamePointerLock(pointerX = window.innerWidth / 2, pointerY = window.innerHeight / 2) {
+  focusGameCanvas();
   state.pointerLockPending = true;
   state.lastPointerX = pointerX;
   state.lastPointerY = pointerY;
   if (typeof canvas.requestPointerLock !== 'function') {
     state.pointerLockPending = false;
     state.fallbackAvailable = true;
-    showNotice('Mouse lock is unavailable. Hold and drag to look around.');
+    showNotice('Mouse lock is unavailable. Use arrow keys to look, or drag to turn.');
     return;
   }
   try {
@@ -1009,13 +1092,13 @@ function requestGamePointerLock(pointerX = window.innerWidth / 2, pointerY = win
       request.catch(() => {
         state.pointerLockPending = false;
         state.fallbackAvailable = true;
-        showNotice('Mouse lock was blocked. Hold and drag to look around.');
+        showNotice('Mouse lock was blocked. Use arrow keys to look, or drag to turn.');
       });
     }
   } catch {
     state.pointerLockPending = false;
     state.fallbackAvailable = true;
-    showNotice('Mouse lock was blocked. Hold and drag to look around.');
+    showNotice('Mouse lock was blocked. Use arrow keys to look, or drag to turn.');
   }
 }
 
@@ -1032,6 +1115,7 @@ function attack(fromKeyboard = false) {
     sendMultiplayerAttack(target);
     return;
   }
+
   const damage = state.player.weapon;
   if (pigs.includes(target)) {
     damagePig(target, damage, 'You');
@@ -1138,6 +1222,7 @@ function endGame(won) {
   overlayCopy.textContent = won ? 'All rival teams are out. The void is yours.' : 'Your pig is gone, and your last life was spent.';
   startButton.textContent = 'PLAY AGAIN';
   $('.online-controls').classList.add('hidden');
+  updateTouchControlsVisibility();
   overlay.classList.remove('hidden');
 }
 
@@ -1198,10 +1283,11 @@ function movePlayer(delta) {
     if (!onlineMatch && performance.now() / 1000 >= state.respawnAt && playerTeam().pig.alive) spawnPlayer();
     return;
   }
-  const forwardInput = (keys.has(bindings.forward) ? 1 : 0) - (keys.has(bindings.back) ? 1 : 0);
-  const sideInput = (keys.has(bindings.right) ? 1 : 0) - (keys.has(bindings.left) ? 1 : 0);
+  const forwardInput = (keys.has(bindings.forward) ? 1 : 0) - (keys.has(bindings.back) ? 1 : 0) + state.touchMoveY;
+  const sideInput = (keys.has(bindings.right) ? 1 : 0) - (keys.has(bindings.left) ? 1 : 0) + state.touchMoveX;
   const inputLength = Math.hypot(forwardInput, sideInput) || 1;
-  const sneaking = keys.has(bindings.sneak) || (bindings.sneak === 'ShiftLeft' && keys.has('ShiftRight'));
+  const sneaking = state.touchSneaking || keys.has(bindings.sneak) ||
+    (bindings.sneak === 'ShiftLeft' && keys.has('ShiftRight'));
   const boosted = performance.now() / 1000 < state.player.speedBoostUntil;
   const speed = (sneaking ? 1.7 : 6) * (boosted && !sneaking ? 1.35 : 1);
   const desiredX = (-Math.sin(state.yaw) * forwardInput + Math.cos(state.yaw) * sideInput) / inputLength * speed;
@@ -1231,10 +1317,11 @@ function movePlayer(delta) {
   camera.position.x = nextX;
   camera.position.z = nextZ;
   $('#stance-indicator').classList.toggle('hidden', !sneaking);
-  if (keys.has(bindings.jump) && state.onGround) {
+  if ((keys.has(bindings.jump) || state.touchJumpPressed) && state.onGround) {
     state.velocityY = 8.2;
     state.onGround = false;
   }
+  state.touchJumpPressed = false;
   state.velocityY -= 21 * delta;
   camera.position.y += state.velocityY * delta;
   const newFeet = camera.position.y - 1.65;
@@ -1609,7 +1696,7 @@ function buy(item) {
 function closeShop() {
   shopPanel.classList.add('hidden');
   updateInteraction();
-  if (state.mode === 'playing') requestGamePointerLock();
+  if (state.mode === 'playing' || state.mode === 'waiting') requestGamePointerLock();
 }
 
 function updateResources() {
@@ -1748,10 +1835,80 @@ function updateGenerator(time) {
 
 function saveSettings() {
   try {
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify({ bindings, fieldOfView }));
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify({ bindings, fieldOfView, touchControlsEnabled }));
   } catch (error) {
     console.warn('Could not save game settings.', error);
     showNotice('Settings could not be saved in this browser.');
+  }
+}
+
+function resetTouchInput() {
+  joystickPointerId = null;
+  lookPointerId = null;
+  state.touchMoveX = 0;
+  state.touchMoveY = 0;
+  state.touchSneaking = false;
+  state.touchJumpPressed = false;
+  sneakTouchButton?.setAttribute('aria-pressed', 'false');
+  joystickKnob.style.transform = 'translate(0, 0)';
+}
+
+function updateTouchControlsVisibility() {
+  const visible = touchControlsEnabled && (state.mode === 'playing' || state.mode === 'waiting');
+  touchControls.classList.toggle('hidden', !visible);
+  touchControls.classList.toggle('waiting', state.mode === 'waiting');
+}
+
+function setTouchControls(enabled, persist = true) {
+  touchControlsEnabled = enabled;
+  touchControlsToggle.checked = enabled;
+  touchControlsSettingsToggle.checked = enabled;
+  if (!enabled) resetTouchInput();
+  updateTouchControlsVisibility();
+  if (persist) saveSettings();
+}
+
+function updateJoystick(event) {
+  const bounds = touchJoystick.getBoundingClientRect();
+  const radius = Math.max(1, (bounds.width - 50) / 2);
+  const dx = event.clientX - (bounds.left + bounds.width / 2);
+  const dy = event.clientY - (bounds.top + bounds.height / 2);
+  const distance = Math.hypot(dx, dy);
+  const scale = distance > radius ? radius / distance : 1;
+  const knobX = dx * scale;
+  const knobY = dy * scale;
+  state.touchMoveX = THREE.MathUtils.clamp(knobX / radius, -1, 1);
+  state.touchMoveY = THREE.MathUtils.clamp(-knobY / radius, -1, 1);
+  joystickKnob.style.transform = `translate(${knobX}px, ${knobY}px)`;
+}
+
+function releaseJoystick(event) {
+  if (event.pointerId !== joystickPointerId) return;
+  joystickPointerId = null;
+  state.touchMoveX = 0;
+  state.touchMoveY = 0;
+  joystickKnob.style.transform = 'translate(0, 0)';
+}
+
+function handleTouchAction(action) {
+  if (action === 'jump') {
+    state.touchJumpPressed = true;
+  } else if (action === 'sneak') {
+    state.touchSneaking = true;
+  } else if (action === 'attack') {
+    if (state.selected === 0 || state.selected === 4) attack(true);
+    else useItem();
+  } else if (action === 'build' && state.mode === 'playing') {
+    state.selected = 1;
+    updateHotbar();
+    buildAtAim();
+  } else if (action === 'shop' && state.mode === 'playing') {
+    if (!shopPanel.classList.contains('hidden')) closeShop();
+    else if (playerTeam().shop &&
+        Math.hypot(camera.position.x - playerTeam().shop.position.x,
+          camera.position.z - playerTeam().shop.position.z) < 4) openShop();
+  } else if (action === 'utility') {
+    useItem();
   }
 }
 
@@ -1804,21 +1961,23 @@ function closeSettings() {
 
 function handleRebind(event) {
   if (!pendingRebind) return;
+  const code = keyboardCode(event);
   event.preventDefault();
   event.stopImmediatePropagation();
-  if (event.code === 'Escape') {
+  if (code === 'Escape') {
     pendingRebind = null;
     renderBindings();
     return;
   }
-  const conflicting = Object.keys(bindings).find((action) => action !== pendingRebind && bindings[action] === event.code);
+  if (!code) return;
+  const conflicting = Object.keys(bindings).find((action) => action !== pendingRebind && bindings[action] === code);
   if (conflicting) {
     showNotice(`That key is already used for ${BINDING_LABELS[conflicting]}.`);
     pendingRebind = null;
     renderBindings();
     return;
   }
-  bindings[pendingRebind] = event.code;
+  bindings[pendingRebind] = code;
   pendingRebind = null;
   saveSettings();
   renderBindings();
@@ -1830,7 +1989,7 @@ function startGame() {
     return;
   }
   if (state.started && state.mode === 'playing') {
-    canvas.focus({ preventScroll: true });
+    focusGameCanvas();
     if (!hasGamePointerLock()) requestGamePointerLock();
     overlay.classList.add('hidden');
     return;
@@ -1841,9 +2000,11 @@ function startGame() {
   state.mode = 'playing';
   $('.match-picker').classList.add('hidden');
   $('.online-controls').classList.add('hidden');
+  queueStatusPanel.classList.add('hidden');
   overlay.classList.add('hidden');
   hud.classList.remove('hidden');
-  canvas.focus({ preventScroll: true });
+  updateTouchControlsVisibility();
+  focusGameCanvas();
   const now = performance.now() / 1000;
   if (firstStart) {
     for (const bot of entities) {
@@ -1857,7 +2018,9 @@ function startGame() {
   renderTeamStatus();
   $('#objective').textContent = `${matchModes[selectedMatchMode].label} · Protect your pig!`;
   requestGamePointerLock();
-  showNotice('Collect iron at your generator. Keep an eye on your pig!');
+  showNotice(state.fallbackAvailable
+    ? 'No mouse lock: use arrow keys to look and WASD to move.'
+    : 'Collect iron at your generator. Keep an eye on your pig!');
 }
 
 document.addEventListener('pointerlockchange', () => {
@@ -1879,11 +2042,11 @@ document.addEventListener('pointerlockchange', () => {
 document.addEventListener('pointerlockerror', () => {
   state.pointerLockPending = false;
   state.fallbackAvailable = true;
-  showNotice('Mouse lock was blocked. Hold and drag to look around.');
+  showNotice('Mouse lock was blocked. Use arrow keys to look, or drag to turn.');
 });
 
 document.addEventListener('mousemove', (event) => {
-  if (!hasGamePointerLock() || state.mode !== 'playing') return;
+  if (!hasGamePointerLock() || (state.mode !== 'playing' && state.mode !== 'waiting')) return;
   updateLook(event.movementX ?? event.mozMovementX ?? 0, event.movementY ?? event.mozMovementY ?? 0);
 });
 function updateLook(deltaX, deltaY) {
@@ -1902,8 +2065,9 @@ function updateHeading() {
 }
 
 canvas.addEventListener('pointerdown', (event) => {
-  if (state.mode !== 'playing' || !state.alive || !shopPanel.classList.contains('hidden')) return;
-  canvas.focus({ preventScroll: true });
+  if ((state.mode !== 'playing' && state.mode !== 'waiting') || !state.alive ||
+      !shopPanel.classList.contains('hidden')) return;
+  focusGameCanvas();
   if (!hasGamePointerLock()) {
     event.preventDefault();
     state.lastPointerX = event.clientX;
@@ -1912,7 +2076,7 @@ canvas.addEventListener('pointerdown', (event) => {
     canvas.setPointerCapture?.(event.pointerId);
     if (!state.fallbackAvailable && !state.pointerLockPending) requestGamePointerLock(event.clientX, event.clientY);
   }
-  if (hasGamePointerLock() || state.fallbackDragging) {
+  if (state.mode === 'playing' && (hasGamePointerLock() || state.fallbackDragging)) {
     if (event.button === 0) {
       if (state.selected === 0 || state.selected === 4) attack();
       else useItem();
@@ -1923,7 +2087,8 @@ canvas.addEventListener('pointerdown', (event) => {
   }
 });
 document.addEventListener('pointermove', (event) => {
-  if (hasGamePointerLock() || !state.fallbackDragging || state.mode !== 'playing') return;
+  if (hasGamePointerLock() || !state.fallbackDragging ||
+      (state.mode !== 'playing' && state.mode !== 'waiting')) return;
   const deltaX = event.clientX - state.lastPointerX;
   const deltaY = event.clientY - state.lastPointerY;
   state.lastPointerX = event.clientX;
@@ -1933,45 +2098,95 @@ document.addEventListener('pointermove', (event) => {
 document.addEventListener('pointerup', () => {
   if (!hasGamePointerLock()) state.fallbackDragging = false;
 });
+touchJoystick.addEventListener('pointerdown', (event) => {
+  if (!touchControlsEnabled || (state.mode !== 'playing' && state.mode !== 'waiting')) return;
+  event.preventDefault();
+  joystickPointerId = event.pointerId;
+  updateJoystick(event);
+  if (event.pointerType !== 'touch') touchJoystick.setPointerCapture?.(event.pointerId);
+});
+touchJoystick.addEventListener('pointermove', (event) => {
+  if (event.pointerId === joystickPointerId) updateJoystick(event);
+});
+touchJoystick.addEventListener('pointerup', releaseJoystick);
+touchJoystick.addEventListener('pointercancel', releaseJoystick);
+touchLookArea.addEventListener('pointerdown', (event) => {
+  if (!touchControlsEnabled || (state.mode !== 'playing' && state.mode !== 'waiting')) return;
+  event.preventDefault();
+  lookPointerId = event.pointerId;
+  state.lastPointerX = event.clientX;
+  state.lastPointerY = event.clientY;
+  if (event.pointerType !== 'touch') touchLookArea.setPointerCapture?.(event.pointerId);
+});
+touchLookArea.addEventListener('pointermove', (event) => {
+  if (event.pointerId !== lookPointerId) return;
+  event.preventDefault();
+  updateLook(event.clientX - state.lastPointerX, event.clientY - state.lastPointerY);
+  state.lastPointerX = event.clientX;
+  state.lastPointerY = event.clientY;
+});
+const releaseLook = (event) => {
+  if (event.pointerId === lookPointerId) lookPointerId = null;
+};
+touchLookArea.addEventListener('pointerup', releaseLook);
+touchLookArea.addEventListener('pointercancel', releaseLook);
+const sneakTouchButton = document.querySelector('[data-touch-action="sneak"]');
+for (const button of document.querySelectorAll('[data-touch-action]')) {
+  button.addEventListener('click', () => {
+    const action = button.dataset.touchAction;
+    if (action === 'sneak') {
+      state.touchSneaking = !state.touchSneaking;
+      button.setAttribute('aria-pressed', String(state.touchSneaking));
+    } else handleTouchAction(action);
+  });
+}
+touchControlsToggle.addEventListener('change', () => setTouchControls(touchControlsToggle.checked));
+touchControlsSettingsToggle.addEventListener('change', () => setTouchControls(touchControlsSettingsToggle.checked));
+$('#cancel-matchmaking').addEventListener('click', cancelMatchmaking);
 document.addEventListener('keydown', (event) => {
-  if (!settingsPanel.classList.contains('hidden') && event.code === 'Escape' && !pendingRebind) {
+  const code = keyboardCode(event);
+  if (!settingsPanel.classList.contains('hidden') && code === 'Escape' && !pendingRebind) {
     closeSettings();
     return;
   }
   if (!settingsPanel.classList.contains('hidden')) return;
   const movementCodes = [bindings.forward, bindings.back, bindings.left, bindings.right, bindings.jump, bindings.sneak,
     'Space', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'];
-  if (state.mode === 'playing' && movementCodes.includes(event.code)) {
+  if ((state.mode === 'playing' || state.mode === 'waiting') && movementCodes.includes(code)) {
     event.preventDefault();
   }
-  if (state.mode === 'playing') {
+  if (state.mode === 'playing' || state.mode === 'waiting') {
     const keyLook = 0.055;
-    if (event.code === 'ArrowLeft') updateLook(-keyLook / 0.0021, 0);
-    if (event.code === 'ArrowRight') updateLook(keyLook / 0.0021, 0);
-    if (event.code === 'ArrowUp') updateLook(0, -keyLook / 0.0021);
-    if (event.code === 'ArrowDown') updateLook(0, keyLook / 0.0021);
+    if (code === 'ArrowLeft') updateLook(-keyLook / 0.0021, 0);
+    if (code === 'ArrowRight') updateLook(keyLook / 0.0021, 0);
+    if (code === 'ArrowUp') updateLook(0, -keyLook / 0.0021);
+    if (code === 'ArrowDown') updateLook(0, keyLook / 0.0021);
   }
-  keys.add(event.code);
-  const slot = Object.keys(bindings).find((action) => action.startsWith('slot') && bindings[action] === event.code);
+  if (code) keys.add(code);
+  const slot = Object.keys(bindings).find((action) => action.startsWith('slot') && bindings[action] === code);
   if (slot) {
     state.selected = Number(slot.slice(4)) - 1;
     updateHotbar();
   }
   if (event.repeat || state.mode !== 'playing') return;
-  if (event.code === bindings.attack) attack(true);
-  if (event.code === bindings.place && state.selected === 1) buildAtAim();
-  if (event.code === bindings.utility) useItem();
-  if (event.code === bindings.shop) {
+  if (code === bindings.shop) {
     if (!shopPanel.classList.contains('hidden')) closeShop();
     else if (playerTeam().shop &&
         Math.hypot(camera.position.x - playerTeam().shop.position.x,
           camera.position.z - playerTeam().shop.position.z) < 4) openShop();
   }
 });
-document.addEventListener('keyup', (event) => keys.delete(event.code));
+document.addEventListener('keyup', (event) => keys.delete(keyboardCode(event)));
 window.addEventListener('blur', () => {
   keys.clear();
   state.fallbackDragging = false;
+  resetTouchInput();
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    keys.clear();
+    resetTouchInput();
+  }
 });
 canvas.addEventListener('contextmenu', (event) => event.preventDefault());
 document.addEventListener('wheel', (event) => {
@@ -1994,7 +2209,7 @@ for (const button of document.querySelectorAll('[data-match-mode]')) {
   });
 }
 $('#close-shop').addEventListener('click', closeShop);
-$('#help-button').addEventListener('click', () => showNotice('WASD move · Shift sneak/edge guard · Mouse/drag or arrows look · F/click attack · G/right-click build · E shop · H utility'));
+$('#help-button').addEventListener('click', () => showNotice('WASD move · Space jump · Shift sneak · Mouse/touch drag look · click/tap attack · right-click or Build button place · E shop'));
 $('#settings-button').addEventListener('click', openSettings);
 $('#menu-settings-button').addEventListener('click', openSettings);
 $('#close-settings').addEventListener('click', closeSettings);
@@ -2021,43 +2236,67 @@ $('#fov-slider').value = String(fieldOfView);
 $('#fov-value').textContent = `${fieldOfView}°`;
 window.addEventListener('keydown', handleRebind, true);
 renderBindings();
+setTouchControls(touchControlsEnabled, false);
 
 const crosshair = $('#crosshair');
 let lastAimTarget = null;
+let fpsReportStartedAt = performance.now();
+let fpsReportFrameCount = 0;
 
 function frame() {
   requestAnimationFrame(frame);
   const delta = Math.min(clock.getDelta(), 0.045);
   const time = performance.now() / 1000;
-  if (state.mode === 'playing') {
-    heldItem.visible = state.alive;
+  if (state.mode === 'playing' || state.mode === 'waiting') {
+    heldItem.visible = state.alive && state.mode === 'playing';
     movePlayer(delta);
-    if (onlineMatch && time - lastNetworkMoveAt >= 0.05) {
-      lastNetworkMoveAt = time;
-      sendMultiplayerMessage({
-        type: 'move',
-        position: { x: camera.position.x, y: camera.position.y, z: camera.position.z },
-        yaw: state.yaw,
-      });
+    if (state.mode === 'waiting') {
+      if (camera.position.y < -25) {
+        camera.position.set(8, 1.65, 8);
+        state.velocityX = 0;
+        state.velocityY = 0;
+        state.velocityZ = 0;
+      }
+    } else {
+      if (onlineMatch && time - lastNetworkMoveAt >= 0.05) {
+        lastNetworkMoveAt = time;
+        sendMultiplayerMessage({
+          type: 'move',
+          position: { x: camera.position.x, y: camera.position.y, z: camera.position.z },
+          yaw: state.yaw,
+        });
+      }
+      moveBots(delta, time);
+      updateGenerator(time);
+      updatePickups(time, delta);
+      updateArrows(delta);
+      updateInteraction();
+      const target = state.alive ? getAimTarget() : null;
+      if (target !== lastAimTarget) {
+        lastAimTarget = target;
+        crosshair.classList.toggle('targeting', Boolean(target));
+        crosshair.setAttribute('aria-label', target ? `Aiming at ${target.team.name}` : 'Aim reticle');
+      }
+      for (const fly of [...fireballs]) fly(delta);
+      if (camera.position.y < -25 && state.alive) hurtPlayer(100);
     }
-    moveBots(delta, time);
-    updateGenerator(time);
-    updatePickups(time, delta);
-    updateArrows(delta);
-    updateInteraction();
-    const target = state.alive ? getAimTarget() : null;
-    if (target !== lastAimTarget) {
-      lastAimTarget = target;
-      crosshair.classList.toggle('targeting', Boolean(target));
-      crosshair.setAttribute('aria-label', target ? `Aiming at ${target.team.name}` : 'Aim reticle');
-    }
-    for (const fly of [...fireballs]) fly(delta);
-    if (camera.position.y < -25 && state.alive) hurtPlayer(100);
   } else heldItem.visible = false;
   for (const remote of remotePlayers.values()) {
     remote.group.position.lerp(remote.targetPosition, Math.min(1, delta * 14));
   }
   renderer.render(scene, camera);
+  fpsReportFrameCount += 1;
+  const fpsReportNow = performance.now();
+  if (fpsReportNow - fpsReportStartedAt >= 500) {
+    if (window.parent !== window) {
+      window.parent.postMessage({
+        type: 'void-pig-wars-fps',
+        fps: Math.round(fpsReportFrameCount * 1000 / (fpsReportNow - fpsReportStartedAt)),
+      }, '*');
+    }
+    fpsReportStartedAt = fpsReportNow;
+    fpsReportFrameCount = 0;
+  }
 }
 
 createWorld();

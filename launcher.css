@@ -1,0 +1,44 @@
+:root {
+  color-scheme: dark;
+  font-family: 'Segoe UI', sans-serif;
+  color: #f3f8fb;
+  background: #102338;
+  --panel: #18324a;
+  --line: #aecfe444;
+  --mint: #76f2b2;
+}
+
+* { box-sizing: border-box; }
+body { min-width: 320px; min-height: 100vh; margin: 0; background: radial-gradient(ellipse at 50% -15%, #40799b 0, #173550 42%, #0c1b2a 100%); }
+button, input { font: inherit; }
+button { border: 2px solid #bbffda; border-radius: 2px; padding: 12px 19px; color: #101426; background: var(--mint); font-size: 11px; font-weight: 800; letter-spacing: .1em; cursor: pointer; box-shadow: 0 4px 0 #318158; }
+button:hover { background: #a5ffd0; }
+.launcher { display: flex; min-height: 100vh; flex-direction: column; padding: 18px 24px 24px; }
+.launcher-header { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+.launcher-brand { display: flex; align-items: center; gap: 10px; color: #f3f8fb; font-weight: 800; letter-spacing: .13em; text-decoration: none; }
+.launcher-brand small { display: block; margin-top: 4px; color: #a9c8da; font: 9px 'Consolas', monospace; letter-spacing: .16em; }
+.brand-mark { color: #a6eaff; font-size: 27px; }
+.performance { display: flex; align-items: baseline; gap: 10px; padding: 9px 13px; border: 1px solid var(--line); background: #08152299; box-shadow: 3px 3px 0 #07121c; }
+.performance-label { color: #a8c6d8; font: 9px 'Consolas', monospace; letter-spacing: .12em; }
+#fps-display { min-width: 3ch; color: var(--mint); font: 700 19px 'Consolas', monospace; text-align: right; }
+.launcher-bar { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px; max-width: 1100px; width: 100%; margin: 24px auto 0; padding: 13px; border: 1px solid var(--line); background: #142b42ed; box-shadow: 4px 4px 0 #07121c; }
+.launcher-bar label { color: #a9c8da; font: 10px 'Consolas', monospace; letter-spacing: .1em; }
+.launcher-bar input { width: 100%; min-width: 0; border: 1px solid #a8d3ec55; border-radius: 2px; padding: 11px 12px; color: #eff9ff; background: #081522; font: 12px 'Consolas', monospace; }
+.launcher-bar input:focus { outline: 2px solid var(--mint); outline-offset: 1px; }
+.launcher-status { width: min(1100px, 100%); min-height: 18px; margin: 12px auto 8px; color: #bad4e3; font-size: 11px; }
+.game-stage { position: relative; display: grid; flex: 1; min-height: min(640px, 70vh); width: 100%; max-width: 1100px; margin: 0 auto; overflow: hidden; border: 2px solid #a9d9f255; background: #0a1521; box-shadow: 5px 5px 0 #07121c, 0 18px 54px #050c14a8; }
+#game-frame { display: block; width: 100%; height: 100%; min-height: min(640px, 70vh); border: 0; background: #93d9f2; }
+#game-frame[hidden], .game-placeholder[hidden] { display: none; }
+.game-placeholder { align-self: center; justify-self: center; max-width: 440px; padding: 28px; text-align: center; }
+.placeholder-pig { font-size: 54px; filter: drop-shadow(0 6px 10px #f49a9a55); }
+.game-placeholder h1 { margin: 11px 0; font-size: clamp(23px, 5vw, 38px); letter-spacing: .07em; }
+.game-placeholder p { margin: 0 auto 22px; color: #b3cad9; font-size: 13px; line-height: 1.5; }
+
+@media (max-width: 640px) {
+  .launcher { padding: 12px; }
+  .launcher-bar { grid-template-columns: 1fr auto; gap: 9px; margin-top: 17px; }
+  .launcher-bar label { grid-column: 1 / -1; }
+  .launcher-bar input { font-size: 10px; }
+  .launcher-bar button { padding: 11px 12px; font-size: 9px; }
+  .game-stage, #game-frame { min-height: 65vh; }
+}

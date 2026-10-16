@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#142b42" />
+    <title>Void Pig Wars Launcher</title>
+    <link rel="stylesheet" href="./launcher.css" />
+    <script src="./launcher.js" defer></script>
+  </head>
+  <body>
+    <main class="launcher">
+      <header class="launcher-header">
+        <a class="launcher-brand" href="./">
+          <span class="brand-mark">✦</span>
+          <span>VOID PIG WARS <small>WEB LAUNCHER</small></span>
+        </a>
+        <div class="performance" aria-live="polite">
+          <span class="performance-label">LIVE FPS</span>
+          <output id="fps-display">--</output>
+        </div>
+      </header>
+
+      <section class="launcher-bar" aria-label="Game launch settings">
+        <label for="game-url">GAME URL</label>
+        <input id="game-url" type="url" spellcheck="false" autocomplete="url" />
+        <button id="launch-game" type="button">LAUNCH GAME</button>
+      </section>
+
+      <p id="launcher-status" class="launcher-status" role="status" aria-live="polite">
+        Ready to launch in your browser. No app install required.
+      </p>
+
+      <section class="game-stage" aria-label="Embedded game">
+        <div id="game-placeholder" class="game-placeholder">
+          <div class="placeholder-pig">🐷</div>
+          <h1>VOID PIG WARS</h1>
+          <p>Choose your game URL above, then launch into the voxel arena.</p>
+          <button id="placeholder-launch" type="button">LAUNCH GAME</button>
+        </div>
+        <iframe
+          id="game-frame"
+          title="Void Pig Wars game"
+          allow="fullscreen; pointer-lock"
+          allowfullscreen
+          hidden
+        ></iframe>
+      </section>
+    </main>
+  </body>
+</html>
