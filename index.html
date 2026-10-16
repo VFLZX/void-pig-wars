@@ -18,6 +18,7 @@
           <div class="top-right">
             <span id="stance-indicator" class="stance-indicator hidden">SNEAKING · EDGE SAFE</span>
             <span id="heading-indicator" class="heading-indicator">E</span>
+            <span id="network-indicator" class="network-indicator hidden">ONLINE · 1</span>
             <span id="objective">Protect your pig!</span>
             <button id="settings-button" class="icon-button" title="Settings" aria-label="Settings">⚙</button>
             <button id="help-button" class="icon-button" title="Controls">?</button>
@@ -72,7 +73,15 @@
             </button>
           </div>
           <button id="menu-settings-button" class="secondary-button">SETTINGS</button>
-          <button id="start-button" class="primary-button">START MATCH</button>
+          <button id="start-button" class="primary-button">PLAY VS BOTS</button>
+          <div class="online-controls">
+            <label for="multiplayer-server">MULTIPLAYER SERVER</label>
+            <input id="multiplayer-server" type="url" spellcheck="false" autocomplete="url" placeholder="wss://your-server.example" />
+            <div class="online-actions">
+              <button id="online-match-button" class="secondary-button">FIND ONLINE MATCH</button>
+              <span id="multiplayer-status" role="status" aria-live="polite">Online play needs a WebSocket server.</span>
+            </div>
+          </div>
           <div class="control-guide">
             <span><kbd>W A S D</kbd> Move</span><span><kbd>SHIFT</kbd> Sneak safely</span><span><kbd>SPACE</kbd> Jump</span>
             <span><kbd>MOUSE / DRAG</kbd> Look</span><span><kbd>ARROWS</kbd> Look backup</span>

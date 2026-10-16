@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: void-pig-wars-multiplayer
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python server.py
+    healthCheckPath: /healthz
+    envVars:
+      - key: ALLOWED_ORIGINS
+        value: https://vflzx.github.io

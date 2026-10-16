@@ -7,11 +7,23 @@ const overlay = $('#overlay');
 const overlayTitle = $('#overlay-title');
 const overlayCopy = $('#overlay-copy');
 const startButton = $('#start-button');
+const onlineMatchButton = $('#online-match-button');
+const multiplayerServerInput = $('#multiplayer-server');
+const multiplayerStatus = $('#multiplayer-status');
 const shopPanel = $('#shop');
 const shopItems = $('#shop-items');
 const settingsPanel = $('#settings');
 const keys = new Set();
 let selectedMatchMode = 'ffa';
+let localTeamId = 'green';
+let multiplayerSocket = null;
+let onlineMatch = false;
+let onlineRoomId = null;
+let onlinePlayerId = null;
+let lastNetworkMoveAt = 0;
+const remotePlayers = new Map();
+const networkBlockKeys = new Set();
+const MULTIPLAYER_SERVER_KEY = 'void-pig-wars-multiplayer-server-v1';
 const DEFAULT_BINDINGS = {
   forward: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD',
   jump: 'Space', sneak: 'ShiftLeft', attack: 'KeyF', place: 'KeyG',
@@ -141,6 +153,21 @@ const matchModes = {
 function activeTeams() {
   return teams.filter((team) => team.active);
 }
+
+function playerTeam() {
+  return teams.find((team) => team.id === localTeamId) ?? teams[0];
+}
+
+let savedMultiplayerServer = '';
+try {
+  savedMultiplayerServer = localStorage.getItem(MULTIPLAYER_SERVER_KEY) || '';
+} catch (error) {
+  console.warn('Could not load the saved multiplayer server address.', error);
+}
+multiplayerServerInput.value = savedMultiplayerServer ||
+  (['localhost', '127.0.0.1'].includes(window.location.hostname)
+    ? `ws://${window.location.hostname}:8765`
+    : '');
 
 const state = {
   mode: 'menu',
@@ -323,16 +350,16 @@ function createBot(team, slot = 0) {
   return bot;
 }
 
-function configureMatchMode(mode) {
+function configureMatchMode(mode, onlineTeams = null) {
   selectedMatchMode = matchModes[mode] ? mode : 'ffa';
   const config = matchModes[selectedMatchMode];
   for (const team of teams) {
     team.active = config.activeTeams.includes(team.id);
-    team.playerControlled = team.id === 'green';
+    team.playerControlled = onlineTeams ? onlineTeams.includes(team.id) : team.id === 'green';
     team.eliminated = false;
     if (team.pig?.group) team.pig.group.visible = team.active;
     if (team.generator) team.generator.visible = team.active;
-    const botCount = config.botCounts[team.id] || 0;
+    const botCount = onlineTeams ? 0 : config.botCounts[team.id] || 0;
     for (const bot of team.bots) {
       bot.active = team.active && bot.slot < botCount;
       bot.alive = bot.active;
@@ -370,6 +397,269 @@ function configureMatchMode(mode) {
     chip.classList.toggle('hidden', !team?.active);
   }
   renderTeamStatus();
+}
+
+function createRemotePlayer(player) {
+  const team = teams.find((entry) => entry.id === player.teamId);
+  if (!team) return null;
+  const group = new THREE.Group();
+  const bodyMaterial = new THREE.MeshLambertMaterial({ color: team.color, flatShading: true });
+  const skinMaterial = new THREE.MeshLambertMaterial({ color: '#ddb38c', flatShading: true });
+  const darkMaterial = new THREE.MeshLambertMaterial({ color: team.dark, flatShading: true });
+  makeMesh(new THREE.BoxGeometry(0.95, 1.05, 0.65), bodyMaterial, group, 0, 0.83, 0);
+  makeMesh(new THREE.BoxGeometry(0.76, 0.68, 0.68), skinMaterial, group, 0, 1.68, 0);
+  makeMesh(new THREE.BoxGeometry(0.28, 0.16, 0.08),
+    new THREE.MeshBasicMaterial({ color: '#272134' }), group, -0.18, 1.73, 0.36);
+  makeMesh(new THREE.BoxGeometry(0.28, 0.16, 0.08),
+    new THREE.MeshBasicMaterial({ color: '#272134' }), group, 0.18, 1.73, 0.36);
+  for (const side of [-1, 1]) {
+    makeMesh(new THREE.BoxGeometry(0.3, 0.85, 0.35), darkMaterial, group, side * 0.4, 0.5, 0);
+  }
+  addSpriteLabel(player.name, team.color, group, 0, 2.5, 0, 2.8);
+  scene.add(group);
+  const remote = {
+    id: player.id,
+    kind: 'remotePlayer',
+    team,
+    group,
+    health: player.health,
+    maxHealth: 100,
+    alive: player.alive,
+    connected: player.connected,
+    targetPosition: new THREE.Vector3(player.x, player.y - 1.65, player.z),
+  };
+  for (const child of group.children) child.userData.target = remote;
+  remotePlayers.set(player.id, remote);
+  return remote;
+}
+
+function applyNetworkBlock(block) {
+  const key = `${block.x},${block.y},${block.z}`;
+  if (networkBlockKeys.has(key)) return;
+  const team = teams.find((entry) => entry.id === block.teamId) ?? playerTeam();
+  makeBlock(block.x, block.y, block.z,
+    new THREE.MeshLambertMaterial({ color: team.color, flatShading: true }));
+  networkBlockKeys.add(key);
+}
+
+function applyNetworkState(networkState) {
+  for (const block of networkState.blocks || []) applyNetworkBlock(block);
+  const playersByTeam = new Map();
+  let connectedPlayers = 0;
+  for (const player of networkState.players || []) {
+    if (player.connected) connectedPlayers++;
+    const teamPlayers = playersByTeam.get(player.teamId) || [];
+    teamPlayers.push(player);
+    playersByTeam.set(player.teamId, teamPlayers);
+    if (player.id === onlinePlayerId) {
+      const distance = Math.hypot(
+        camera.position.x - player.x,
+        camera.position.y - player.y,
+        camera.position.z - player.z,
+      );
+      if (distance > 2.2) camera.position.set(player.x, player.y, player.z);
+      const wasAlive = state.alive;
+      state.alive = player.alive;
+      state.health = player.health;
+      if (wasAlive && !player.alive) showToast('Knocked out! Respawning at your pig.');
+      if (!wasAlive && player.alive) {
+        camera.position.set(player.x, player.y, player.z);
+        state.velocityX = 0;
+        state.velocityY = 0;
+        state.velocityZ = 0;
+        showToast('Respawned!');
+      }
+      $('#network-indicator').textContent = `ONLINE · ${connectedPlayers}`;
+      $('#health-text').textContent = String(player.health);
+      $('#health-fill').style.width = `${player.health}%`;
+    } else {
+      let remote = remotePlayers.get(player.id);
+      if (!remote) remote = createRemotePlayer(player);
+      if (!remote) continue;
+      remote.team = teams.find((entry) => entry.id === player.teamId);
+      remote.health = player.health;
+      remote.alive = player.alive;
+      remote.connected = player.connected;
+      remote.targetPosition.set(player.x, player.y - 1.65, player.z);
+      remote.group.visible = player.alive && player.connected;
+    }
+  }
+
+  for (const pigStatus of networkState.pigs || []) {
+    const team = teams.find((entry) => entry.id === pigStatus.teamId);
+    if (!team?.pig) continue;
+    team.pig.health = pigStatus.health;
+    team.pig.alive = pigStatus.alive;
+    if (team.pig.alive) {
+      team.pig.group.traverse((object) => {
+        if (object.isMesh && object.userData.originalMaterial) object.material = object.userData.originalMaterial;
+      });
+    } else {
+      team.pig.group.traverse((object) => {
+        if (object.isMesh) object.material = new THREE.MeshLambertMaterial({ color: '#594e65', flatShading: true });
+      });
+    }
+    updatePigBar(team.pig);
+    const teamPlayers = playersByTeam.get(team.id) || [];
+    team.eliminated = !team.pig.alive && teamPlayers.every((player) => !player.alive);
+  }
+  renderTeamStatus();
+  if (networkState.winner && state.mode === 'playing') {
+    endGame(networkState.winner === localTeamId);
+  }
+}
+
+function beginOnlineMatch(message) {
+  onlineMatch = true;
+  onlineRoomId = message.roomId;
+  onlinePlayerId = message.playerId;
+  localTeamId = message.teamId;
+  selectedMatchMode = message.mode;
+  const activeTeamsInMatch = message.teams;
+  configureMatchMode(message.mode, activeTeamsInMatch);
+  for (const team of activeTeams()) {
+    team.shop = team.shop || createShopkeeper(team);
+  }
+  const localPlayer = message.state.players.find((player) => player.id === onlinePlayerId);
+  if (localPlayer) {
+    camera.position.set(localPlayer.x, localPlayer.y, localPlayer.z);
+    state.yaw = localPlayer.yaw;
+    state.pitch = 0;
+    camera.rotation.set(state.pitch, state.yaw, 0);
+  }
+  state.started = true;
+  state.mode = 'playing';
+  state.alive = true;
+  state.health = 100;
+  state.velocityX = 0;
+  state.velocityY = 0;
+  state.velocityZ = 0;
+  state.lastIronGen = performance.now() / 1000;
+  state.lastGoldGen = state.lastIronGen;
+  state.lastCentralGen = state.lastIronGen;
+  $('.match-picker').classList.add('hidden');
+  overlay.classList.add('hidden');
+  hud.classList.remove('hidden');
+  $('#network-indicator').classList.remove('hidden');
+  $('#objective').textContent = `ONLINE · ${matchModes[message.mode].label}`;
+  multiplayerStatus.textContent = `Connected to room ${onlineRoomId}.`;
+  onlineMatchButton.textContent = 'IN ONLINE MATCH';
+  onlineMatchButton.disabled = true;
+  updateHotbar();
+  applyNetworkState(message.state);
+  canvas.focus({ preventScroll: true });
+  requestGamePointerLock();
+  showNotice('Online match started. Fight the other players!');
+}
+
+function handleMultiplayerMessage(message) {
+  if (message.type === 'waiting') {
+    multiplayerStatus.textContent = `Finding ${matchModes[message.mode].label}: ${message.players}/${message.needed} players.`;
+  } else if (message.type === 'match_start') {
+    beginOnlineMatch(message);
+  } else if (message.type === 'state') {
+    applyNetworkState(message);
+  } else if (message.type === 'hit') {
+    const attacker = remotePlayers.get(message.attackerId);
+    const targetName = message.targetType === 'pig'
+      ? `${teams.find((team) => team.id === message.targetId)?.name || 'Team'} pig`
+      : remotePlayers.get(message.targetId)?.team.name || 'player';
+    if (message.attackerId === onlinePlayerId) showToast(`Hit ${targetName}! ${message.health} HP left.`);
+    if (message.targetId === onlinePlayerId && attacker) {
+      const source = message.attackerPosition || attacker.group.position;
+      const dx = camera.position.x - source.x;
+      const dz = camera.position.z - source.z;
+      const distance = Math.hypot(dx, dz) || 1;
+      state.velocityX += dx / distance * 3.5;
+      state.velocityZ += dz / distance * 3.5;
+      state.velocityY = Math.max(state.velocityY, 2.4);
+    }
+  } else if (message.type === 'block_placed') {
+    applyNetworkBlock(message.block);
+  } else if (message.type === 'error') {
+    multiplayerStatus.textContent = message.message;
+  }
+}
+
+function sendMultiplayerMessage(message) {
+  if (multiplayerSocket?.readyState === WebSocket.OPEN) {
+    multiplayerSocket.send(JSON.stringify(message));
+  }
+}
+
+function findOnlineMatch() {
+  if (multiplayerSocket && !onlineMatch) {
+    const socket = multiplayerSocket;
+    multiplayerSocket = null;
+    socket.close();
+    onlineMatchButton.textContent = 'FIND ONLINE MATCH';
+    multiplayerStatus.textContent = 'Matchmaking cancelled.';
+    return;
+  }
+  if (onlineMatch) return;
+  let serverUrl;
+  try {
+    serverUrl = new URL(multiplayerServerInput.value.trim());
+  } catch {
+    multiplayerStatus.textContent = 'Enter the multiplayer WebSocket server URL first.';
+    return;
+  }
+  if (!['ws:', 'wss:'].includes(serverUrl.protocol)) {
+    multiplayerStatus.textContent = 'Server address must start with ws:// or wss://.';
+    return;
+  }
+  if (window.location.protocol === 'https:' && serverUrl.protocol !== 'wss:') {
+    multiplayerStatus.textContent = 'An HTTPS game page requires a secure wss:// server.';
+    return;
+  }
+  try {
+    localStorage.setItem(MULTIPLAYER_SERVER_KEY, serverUrl.toString());
+  } catch (error) {
+    console.warn('Could not save the multiplayer server address.', error);
+  }
+  onlineMatchButton.disabled = false;
+  onlineMatchButton.textContent = 'CANCEL MATCHMAKING';
+  multiplayerStatus.textContent = 'Connecting to multiplayer server…';
+  const socket = new WebSocket(serverUrl.toString());
+  multiplayerSocket = socket;
+  socket.addEventListener('open', () => {
+    if (multiplayerSocket !== socket) return;
+    socket.send(JSON.stringify({ type: 'join', mode: selectedMatchMode }));
+    multiplayerStatus.textContent = 'Connected. Joining matchmaking queue…';
+  });
+  socket.addEventListener('message', (event) => {
+    if (multiplayerSocket !== socket) return;
+    try {
+      handleMultiplayerMessage(JSON.parse(event.data));
+    } catch (error) {
+      console.error('Could not process a multiplayer server message.', error);
+      multiplayerStatus.textContent = 'Received an invalid message from the multiplayer server.';
+    }
+  });
+  socket.addEventListener('error', () => {
+    if (multiplayerSocket === socket) {
+      multiplayerStatus.textContent = 'Could not connect. Check the server address and try again.';
+    }
+  });
+  socket.addEventListener('close', () => {
+    if (multiplayerSocket !== socket) return;
+    multiplayerSocket = null;
+    onlineMatchButton.disabled = false;
+    onlineMatchButton.textContent = 'FIND ONLINE MATCH';
+    if (onlineMatch) {
+      state.mode = 'disconnected';
+      $('#network-indicator').textContent = 'OFFLINE';
+      overlayTitle.textContent = 'CONNECTION LOST';
+      overlayCopy.textContent = 'The multiplayer server disconnected. Refresh to return to the lobby.';
+      $('.match-picker').classList.add('hidden');
+      startButton.textContent = 'REFRESH';
+      onlineMatchButton.classList.add('hidden');
+      overlay.classList.remove('hidden');
+      multiplayerStatus.textContent = 'Disconnected from the online match.';
+    } else {
+      multiplayerStatus.textContent = 'Disconnected from matchmaking.';
+    }
+  });
 }
 
 function createWorld() {
@@ -475,7 +765,7 @@ function makeBlock(x, y, z, material = materials.wool, fromPlayer = false) {
   buildMeshes.push(mesh);
   worldSurfaces.push({ x, z, width: 0.5, depth: 0.5, top: y + 0.25, mesh });
   if (fromPlayer) {
-    mesh.material = new THREE.MeshLambertMaterial({ color: teams[0].color, flatShading: true });
+    mesh.material = new THREE.MeshLambertMaterial({ color: playerTeam().color, flatShading: true });
   }
   return mesh;
 }
@@ -612,6 +902,14 @@ function buildAtAim() {
   }
   if (!placement.valid) return showToast('That space is occupied or too close.');
   makeBlock(placement.x, placement.y, placement.z, materials.wool, true);
+  if (onlineMatch) {
+    const key = `${placement.x},${placement.y},${placement.z}`;
+    networkBlockKeys.add(key);
+    sendMultiplayerMessage({
+      type: 'block',
+      position: { x: placement.x, y: placement.y, z: placement.z },
+    });
+  }
   state.player.blocks--;
   updateHotbar();
 }
@@ -627,10 +925,19 @@ function getCombatTargets() {
   const targets = [];
   for (const pig of pigs) if (pig.alive && pig.team.active) targets.push(...pig.group.children);
   for (const entity of entities) if (entity.active && entity.alive) targets.push(...entity.group.children);
+  for (const remote of remotePlayers.values()) {
+    if (remote.alive && remote.connected) targets.push(...remote.group.children);
+  }
   return targets;
 }
 
 function shootArrow() {
+  if (onlineMatch) {
+    const target = getAimTarget();
+    if (!target || target.team?.id === localTeamId) return;
+    sendMultiplayerAttack(target);
+    return;
+  }
   if (!state.player.hasBow) return showToast('Buy a bow from the shop first.');
   if (state.player.arrows < 1) return showToast('You are out of arrows.');
   const now = performance.now() / 1000;
@@ -657,7 +964,13 @@ function updateArrows(delta) {
     const hit = raycaster.intersectObjects(getCombatTargets(), false)[0];
     if (hit) {
       const target = hit.object.userData.target;
-      if (target?.team.id !== 'green') {
+      if (target?.team.id !== localTeamId) {
+        if (onlineMatch) {
+          sendMultiplayerAttack(target);
+          scene.remove(arrow.mesh);
+          arrows.delete(arrow);
+          continue;
+        }
         if (pigs.includes(target)) damagePig(target, 26, 'Arrow');
         else if (target?.health) {
           target.health = Math.max(0, target.health - Math.ceil(26 * (1 - (target.armor || 0))));
@@ -714,7 +1027,11 @@ function attack(fromKeyboard = false) {
   if (now - state.lastAttack < 0.48) return;
   state.lastAttack = now;
   const target = getAimTarget();
-  if (!target || target.team?.id === 'green') return;
+  if (!target || target.team?.id === localTeamId) return;
+  if (onlineMatch) {
+    sendMultiplayerAttack(target);
+    return;
+  }
   const damage = state.player.weapon;
   if (pigs.includes(target)) {
     damagePig(target, damage, 'You');
@@ -729,6 +1046,12 @@ function attack(fromKeyboard = false) {
     } else showToast(`Hit ${target.team.name} for ${damage}`);
     updatePigBar(target);
   }
+}
+
+function sendMultiplayerAttack(target) {
+  const targetType = pigs.includes(target) ? 'pig' : 'player';
+  const targetId = targetType === 'pig' ? target.team.id : target.id;
+  sendMultiplayerMessage({ type: 'attack', target: { type: targetType, id: targetId } });
 }
 
 function knockOutBot(bot, now) {
@@ -798,12 +1121,13 @@ function checkEliminations() {
 
 function checkEndState() {
   if (!state.started || state.mode !== 'playing') return;
-  const playerTeam = teams[0];
-  if (!playerTeam.pig.alive && !state.alive &&
-      playerTeam.bots.every((bot) => !bot.active || !bot.alive)) playerTeam.eliminated = true;
+  if (onlineMatch) return;
+  const userTeam = playerTeam();
+  if (!userTeam.pig.alive && !state.alive &&
+      userTeam.bots.every((bot) => !bot.active || !bot.alive)) userTeam.eliminated = true;
   const remaining = activeTeams().filter((team) => !team.eliminated);
-  if (playerTeam.eliminated) return endGame(false);
-  if (remaining.length === 1 && remaining[0] === playerTeam) endGame(true);
+  if (userTeam.eliminated) return endGame(false);
+  if (remaining.length === 1 && remaining[0] === userTeam) endGame(true);
 }
 
 function endGame(won) {
@@ -813,11 +1137,13 @@ function endGame(won) {
   overlayTitle.textContent = won ? 'VICTORY!' : 'PIG DOWN';
   overlayCopy.textContent = won ? 'All rival teams are out. The void is yours.' : 'Your pig is gone, and your last life was spent.';
   startButton.textContent = 'PLAY AGAIN';
+  $('.online-controls').classList.add('hidden');
   overlay.classList.remove('hidden');
 }
 
 function spawnPlayer() {
-  camera.position.set(-42, 1.65, 0);
+  const team = playerTeam();
+  camera.position.set(team.x, 1.65, team.z);
   state.velocityY = 0;
   state.velocityX = 0;
   state.velocityZ = 0;
@@ -842,7 +1168,7 @@ function hurtPlayer(amount, sourceX = camera.position.x, sourceZ = camera.positi
   $('#health-fill').style.width = `${state.health}%`;
   if (state.health === 0) {
     state.alive = false;
-    if (teams[0].pig.alive) {
+    if (playerTeam().pig.alive) {
       state.respawnAt = performance.now() / 1000 + 5;
       showToast('You were knocked out! Respawning in 5 seconds…');
     } else {
@@ -869,7 +1195,7 @@ function botRespawn(bot) {
 function movePlayer(delta) {
   if (!state.alive) {
     $('#stance-indicator').classList.add('hidden');
-    if (performance.now() / 1000 >= state.respawnAt && teams[0].pig.alive) spawnPlayer();
+    if (!onlineMatch && performance.now() / 1000 >= state.respawnAt && playerTeam().pig.alive) spawnPlayer();
     return;
   }
   const forwardInput = (keys.has(bindings.forward) ? 1 : 0) - (keys.has(bindings.back) ? 1 : 0);
@@ -918,7 +1244,7 @@ function movePlayer(delta) {
     state.velocityY = 0;
     state.onGround = true;
   } else state.onGround = false;
-  if (camera.position.y < -24) {
+  if (!onlineMatch && camera.position.y < -24) {
     hurtPlayer(100);
     if (state.alive) {
       camera.position.set(-42, 1.65, 0);
@@ -1025,10 +1351,10 @@ function moveBots(delta, now) {
     const enemies = entities.filter((enemy) => enemy !== bot && enemy.active && enemy.alive && enemy.team.id !== team.id &&
       (Math.hypot(enemy.group.position.x - pos.x, enemy.group.position.z - pos.z) < 10 ||
        Math.hypot(enemy.group.position.x - team.pig.x, enemy.group.position.z - team.pig.z) < 14));
-    if (team.id !== 'green' && state.alive &&
+    if (team.id !== localTeamId && state.alive &&
         (Math.hypot(camera.position.x - pos.x, camera.position.z - pos.z) < 10 ||
         Math.hypot(camera.position.x - team.pig.x, camera.position.z - team.pig.z) < 14)) {
-      enemies.push({ kind: 'player', team: teams[0], group: { position: camera.position } });
+      enemies.push({ kind: 'player', team: playerTeam(), group: { position: camera.position } });
     }
     if ((bot.combatTarget?.kind === 'player' && !state.alive) ||
         (bot.combatTarget && bot.combatTarget.kind !== 'player' && !bot.combatTarget.alive)) {
@@ -1311,7 +1637,7 @@ function updateHeldItem() {
     makeMesh(new THREE.BoxGeometry(0.12, 0.27, 0.12), handle, heldItem, 0, -0.22, 0);
     makeMesh(new THREE.BoxGeometry(0.2, 0.12, 0.14), edge, heldItem, 0, -0.4, 0);
   } else if (state.selected === 1) {
-    makeMesh(new THREE.BoxGeometry(0.44, 0.44, 0.44), new THREE.MeshLambertMaterial({ color: teams[0].color, flatShading: true }), heldItem);
+    makeMesh(new THREE.BoxGeometry(0.44, 0.44, 0.44), new THREE.MeshLambertMaterial({ color: playerTeam().color, flatShading: true }), heldItem);
   } else if (state.selected === 2) {
     makeMesh(new THREE.BoxGeometry(0.35, 0.38, 0.35), new THREE.MeshLambertMaterial({ color: '#d9474d', flatShading: true }), heldItem);
     makeMesh(new THREE.BoxGeometry(0.1, 0.16, 0.1), new THREE.MeshLambertMaterial({ color: '#598b3f', flatShading: true }), heldItem, 0.04, 0.25, 0);
@@ -1377,7 +1703,12 @@ function capitalize(value) {
 }
 
 function updateInteraction() {
-  const shopPos = teams[0].shop.position;
+  const shop = playerTeam().shop;
+  if (!shop) {
+    $('#interaction').classList.add('hidden');
+    return;
+  }
+  const shopPos = shop.position;
   const distance = Math.hypot(camera.position.x - shopPos.x, camera.position.z - shopPos.z);
   const interaction = $('#interaction');
   if (distance < 4 && state.alive && state.mode === 'playing' && shopPanel.classList.contains('hidden')) {
@@ -1392,11 +1723,11 @@ function updateInteraction() {
 function updateGenerator(time) {
   if (time - state.lastIronGen > 2.3) {
     state.lastIronGen = time;
-    spawnPickup('iron', teams[0].x, teams[0].z, 1, '#d9e1ef');
+    spawnPickup('iron', playerTeam().x, playerTeam().z, 1, '#d9e1ef');
   }
   if (time - state.lastGoldGen > 8) {
     state.lastGoldGen = time;
-    spawnPickup('gold', teams[0].x, teams[0].z, 1, '#ffd04c', 0.75);
+    spawnPickup('gold', playerTeam().x, playerTeam().z, 1, '#ffd04c', 0.75);
   }
   if (time - state.lastCentralGen > 6) {
     state.lastCentralGen = time;
@@ -1494,6 +1825,10 @@ function handleRebind(event) {
 }
 
 function startGame() {
+  if (state.mode === 'disconnected') {
+    window.location.reload();
+    return;
+  }
   if (state.started && state.mode === 'playing') {
     canvas.focus({ preventScroll: true });
     if (!hasGamePointerLock()) requestGamePointerLock();
@@ -1505,6 +1840,7 @@ function startGame() {
   state.started = true;
   state.mode = 'playing';
   $('.match-picker').classList.add('hidden');
+  $('.online-controls').classList.add('hidden');
   overlay.classList.add('hidden');
   hud.classList.remove('hidden');
   canvas.focus({ preventScroll: true });
@@ -1627,7 +1963,9 @@ document.addEventListener('keydown', (event) => {
   if (event.code === bindings.utility) useItem();
   if (event.code === bindings.shop) {
     if (!shopPanel.classList.contains('hidden')) closeShop();
-    else if (Math.hypot(camera.position.x - teams[0].shop.position.x, camera.position.z - teams[0].shop.position.z) < 4) openShop();
+    else if (playerTeam().shop &&
+        Math.hypot(camera.position.x - playerTeam().shop.position.x,
+          camera.position.z - playerTeam().shop.position.z) < 4) openShop();
   }
 });
 document.addEventListener('keyup', (event) => keys.delete(event.code));
@@ -1642,6 +1980,7 @@ document.addEventListener('wheel', (event) => {
   updateHotbar();
 }, { passive: true });
 startButton.addEventListener('click', startGame);
+onlineMatchButton.addEventListener('click', findOnlineMatch);
 for (const button of document.querySelectorAll('[data-match-mode]')) {
   button.addEventListener('click', () => {
     if (state.started) return;
@@ -1693,6 +2032,14 @@ function frame() {
   if (state.mode === 'playing') {
     heldItem.visible = state.alive;
     movePlayer(delta);
+    if (onlineMatch && time - lastNetworkMoveAt >= 0.05) {
+      lastNetworkMoveAt = time;
+      sendMultiplayerMessage({
+        type: 'move',
+        position: { x: camera.position.x, y: camera.position.y, z: camera.position.z },
+        yaw: state.yaw,
+      });
+    }
     moveBots(delta, time);
     updateGenerator(time);
     updatePickups(time, delta);
@@ -1707,6 +2054,9 @@ function frame() {
     for (const fly of [...fireballs]) fly(delta);
     if (camera.position.y < -25 && state.alive) hurtPlayer(100);
   } else heldItem.visible = false;
+  for (const remote of remotePlayers.values()) {
+    remote.group.position.lerp(remote.targetPosition, Math.min(1, delta * 14));
+  }
   renderer.render(scene, camera);
 }
 

@@ -2,21 +2,37 @@
 
 A first-person voxel arena game set on floating islands beneath a bright, light-blue sky. Choose a match in the lobby before playing: **1v1** puts you against one rival, **Doubles (2v2)** gives you a bot teammate against a two-bot team, and **1v1v1v1** enables all four rival islands. Protect your team's pig, gather generator resources, and destroy enemy pigs. Pixel-textured grass, dirt, and stone, square islands, blocky clouds, and team-colored details give the arena a brighter Minecraft-inspired look. There are no prebuilt bridges to the central emerald island: build your own route with snap-aligned half-block wool tiles. A cyan placement ghost marks valid placement; red means blocked.
 
-## Play online with GitHub Pages
+## Website and online multiplayer
 
-This repository is a self-contained static site. GitHub Pages serves it directly from the `main` branch root; no build step, backend, external fonts, or network access is needed to run the game.
+The game website is published on GitHub Pages at <https://vflzx.github.io/void-pig-wars/>. GitHub Pages only serves the static game files; it cannot host multiplayer rooms. Real online matches use the separate WebSocket server in `server.py`. The site does not have a public multiplayer server configured yet.
 
-The live game is hosted at <https://vflzx.github.io/void-pig-wars/>.
+Online players select the same mode and join the matchmaking queue. A 1v1 room starts with two human players; doubles and free-for-all start when four humans join. The server assigns teams and shares validated player movement, melee hits, pig health, and placed blocks. The existing **Play vs Bots** button continues to launch the local game without a server.
 
-## Preview locally
+## Run a local online match
 
-Python 3 is enough for a local preview. From this folder, run:
+Install Python 3.11 or newer and the multiplayer server dependency:
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+In one terminal, start the WebSocket server:
+
+```powershell
+python server.py
+```
+
+In a second terminal, serve the browser game:
 
 ```powershell
 python -m http.server 8000
 ```
 
-Then open <http://localhost:8000> in a modern browser. This optional local preview uses Python's simple static file server; it is not needed after deployment.
+Open <http://localhost:8000> in two browser windows, select the same mode, and click **Find Online Match**. The local server address is prefilled for local pages. For doubles and free-for-all, four browser clients are needed to fill a match.
+
+## Host the multiplayer server
+
+The repository includes a Render Blueprint in `render.yaml`. After these multiplayer source files are pushed to the repository, create a Render Blueprint from it and deploy the `void-pig-wars-multiplayer` web service. The Blueprint sets `ALLOWED_ORIGINS=https://vflzx.github.io` and uses `/healthz` as its health check. When Render provides the service hostname, enter `wss://<service-hostname>` in the game's **Multiplayer Server** field. GitHub Pages continues to serve the frontend; the multiplayer service runs separately. The public website still has no multiplayer server configured until this backend is deployed and the multiplayer frontend changes are published.
 
 ## Controls
 
