@@ -11,6 +11,7 @@ const shopPanel = $('#shop');
 const shopItems = $('#shop-items');
 const settingsPanel = $('#settings');
 const keys = new Set();
+let selectedMatchMode = 'ffa';
 const DEFAULT_BINDINGS = {
   forward: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD',
   jump: 'Space', sneak: 'ShiftLeft', attack: 'KeyF', place: 'KeyG',
@@ -51,15 +52,15 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color('#101426');
-scene.fog = new THREE.FogExp2('#101426', 0.0038);
+scene.background = new THREE.Color('#91d9f4');
+scene.fog = new THREE.FogExp2('#91d9f4', 0.0022);
 const camera = new THREE.PerspectiveCamera(76, window.innerWidth / window.innerHeight, 0.08, 260);
 camera.fov = fieldOfView;
 camera.updateProjectionMatrix();
 camera.rotation.order = 'YXZ';
 scene.add(camera);
-scene.add(new THREE.HemisphereLight('#dce6ff', '#4a426c', 2.1));
-const sun = new THREE.DirectionalLight('#fff3d2', 2.5);
+scene.add(new THREE.HemisphereLight('#e8f8ff', '#657c74', 2.55));
+const sun = new THREE.DirectionalLight('#fff5d9', 3.1);
 sun.position.set(-25, 50, 22);
 scene.add(sun);
 
@@ -125,11 +126,21 @@ placementFacePreview.visible = false;
 placementFacePreview.raycast = () => {};
 scene.add(placementFacePreview);
 const teams = [
-  { id: 'green', name: 'Green', color: '#42d98a', dark: '#208051', x: -42, z: 0 },
-  { id: 'blue', name: 'Blue', color: '#52a8ff', dark: '#2865b4', x: 42, z: 0 },
-  { id: 'red', name: 'Red', color: '#ff5c70', dark: '#ae3346', x: 0, z: -42 },
-  { id: 'yellow', name: 'Yellow', color: '#ffd44f', dark: '#aa8120', x: 0, z: 42 },
+  { id: 'green', name: 'Green', color: '#42d98a', dark: '#208051', x: -42, z: 0, bots: [], lastIronGen: 0, lastGoldGen: 0 },
+  { id: 'blue', name: 'Blue', color: '#52a8ff', dark: '#2865b4', x: 42, z: 0, bots: [], lastIronGen: 0, lastGoldGen: 0 },
+  { id: 'red', name: 'Red', color: '#ff5c70', dark: '#ae3346', x: 0, z: -42, bots: [], lastIronGen: 0, lastGoldGen: 0 },
+  { id: 'yellow', name: 'Yellow', color: '#ffd44f', dark: '#aa8120', x: 0, z: 42, bots: [], lastIronGen: 0, lastGoldGen: 0 },
 ];
+
+const matchModes = {
+  solo: { label: '1v1', activeTeams: ['green', 'blue'], botCounts: { green: 0, blue: 1 } },
+  doubles: { label: 'DOUBLES · 2v2', activeTeams: ['green', 'blue'], botCounts: { green: 1, blue: 2 } },
+  ffa: { label: '1v1v1v1', activeTeams: ['green', 'blue', 'red', 'yellow'], botCounts: { green: 0, blue: 1, red: 1, yellow: 1 } },
+};
+
+function activeTeams() {
+  return teams.filter((team) => team.active);
+}
 
 const state = {
   mode: 'menu',
@@ -184,15 +195,20 @@ function addWorldSurface(x, z, width, depth, top = 0, mesh = null, octagon = fal
 }
 
 function createIsland(x, z, team) {
-  const base = makeMesh(new THREE.BoxGeometry(24, 2, 24), materials.terrainSoil, scene, x, -1, z);
+  const islandGroup = new THREE.Group();
+  islandGroup.position.set(x, 0, z);
+  scene.add(islandGroup);
+  if (team) team.islandGroup = islandGroup;
+  const base = makeMesh(new THREE.BoxGeometry(24, 2, 24), materials.terrainSoil, islandGroup, 0, -1, 0);
   base.receiveShadow = true;
-  const top = makeMesh(new THREE.BoxGeometry(24, 0.24, 24), materials.terrainGrass, scene, x, -0.12, z);
+  const top = makeMesh(new THREE.BoxGeometry(24, 0.24, 24), materials.terrainGrass, islandGroup, 0, -0.12, 0);
   addWorldSurface(x, z, 24, 24, 0, top);
+  if (team) worldSurfaces[worldSurfaces.length - 1].teamId = team.id;
   if (team) {
     const trimMaterial = new THREE.MeshLambertMaterial({ color: team.dark, flatShading: true });
     for (let i = -1; i <= 1; i += 2) {
-      makeMesh(new THREE.BoxGeometry(24, 0.35, 0.32), trimMaterial, scene, x, 0.12, z + i * 11.85);
-      makeMesh(new THREE.BoxGeometry(0.32, 0.35, 24), trimMaterial, scene, x + i * 11.85, 0.12, z);
+      makeMesh(new THREE.BoxGeometry(24, 0.35, 0.32), trimMaterial, islandGroup, 0, 0.12, i * 11.85);
+      makeMesh(new THREE.BoxGeometry(0.32, 0.35, 24), trimMaterial, islandGroup, i * 11.85, 0.12, 0);
     }
   }
 }
@@ -271,7 +287,14 @@ function createShopkeeper(team) {
   return group;
 }
 
-function createBot(team) {
+function botHomePosition(team, slot) {
+  const directionX = team.x < 0 ? -1 : team.x > 0 ? 1 : 0;
+  const directionZ = team.z < 0 ? -1 : team.z > 0 ? 1 : 0;
+  const distance = 4 + slot * 2;
+  return { x: team.x + directionX * distance, z: team.z + directionZ * distance };
+}
+
+function createBot(team, slot = 0) {
   const group = new THREE.Group();
   const color = new THREE.MeshLambertMaterial({ color: team.color, flatShading: true });
   const skin = new THREE.MeshLambertMaterial({ color: '#ddb38c', flatShading: true });
@@ -281,11 +304,12 @@ function createBot(team) {
   makeMesh(new THREE.BoxGeometry(0.28, 0.16, 0.08), new THREE.MeshBasicMaterial({ color: '#272134' }), group, -0.18, 1.73, 0.36);
   makeMesh(new THREE.BoxGeometry(0.28, 0.16, 0.08), new THREE.MeshBasicMaterial({ color: '#272134' }), group, 0.18, 1.73, 0.36);
   for (const side of [-1, 1]) makeMesh(new THREE.BoxGeometry(0.3, 0.85, 0.35), dark, group, side * 0.4, 0.5, 0);
-  group.position.set(team.x + (team.x < 0 ? 2 : team.x > 0 ? -2 : 1), 0, team.z + (team.z < 0 ? 2 : team.z > 0 ? -2 : 1));
+  const spawn = botHomePosition(team, slot);
+  group.position.set(spawn.x, 0, spawn.z);
   addSpriteLabel(team.name.toUpperCase(), team.color, group, 0, 2.5, 0, 2.5);
   scene.add(group);
   const bot = {
-    team, group, health: 100, maxHealth: 100, alive: true, respawnAt: 0, attackAt: 0, hitAt: 0,
+    team, slot, active: false, group, health: 100, maxHealth: 100, alive: true, respawnAt: 0, attackAt: 0, hitAt: 0,
     targetPig: null, nextTargetAt: 0, routeTargetPig: null, routeThroughCenter: false,
     combatTarget: null, nextCombatDecisionAt: 0,
     iron: 1, gold: 0, emerald: 0, blocks: 48,
@@ -293,8 +317,59 @@ function createBot(team) {
     lastIronGen: 0, lastGoldGen: 0, nextPurchaseAt: 0, blockMaterial: new THREE.MeshLambertMaterial({ color: team.color, flatShading: true }),
   };
   entities.push(bot);
+  team.bots.push(bot);
+  if (slot === 0) team.bot = bot;
   for (const child of group.children) child.userData.target = bot;
   return bot;
+}
+
+function configureMatchMode(mode) {
+  selectedMatchMode = matchModes[mode] ? mode : 'ffa';
+  const config = matchModes[selectedMatchMode];
+  for (const team of teams) {
+    team.active = config.activeTeams.includes(team.id);
+    team.playerControlled = team.id === 'green';
+    team.eliminated = false;
+    if (team.pig?.group) team.pig.group.visible = team.active;
+    if (team.generator) team.generator.visible = team.active;
+    const botCount = config.botCounts[team.id] || 0;
+    for (const bot of team.bots) {
+      bot.active = team.active && bot.slot < botCount;
+      bot.alive = bot.active;
+      bot.health = bot.maxHealth;
+      bot.respawnAt = 0;
+      bot.attackAt = 0;
+      bot.combatTarget = null;
+      bot.nextCombatDecisionAt = 0;
+      bot.targetPig = null;
+      bot.routeTargetPig = null;
+      bot.routeThroughCenter = false;
+      bot.prepareUntil = 0;
+      bot.group.visible = bot.active;
+      const spawn = botHomePosition(team, bot.slot);
+      bot.group.position.set(spawn.x, 0, spawn.z);
+      bot.velocityX = 0;
+      bot.velocityY = 0;
+      bot.velocityZ = 0;
+      bot.onGround = true;
+    }
+    if (team.pig) {
+      team.pig.alive = true;
+      team.pig.health = team.pig.maxHealth;
+      team.pig.group.traverse((object) => {
+        if (!object.isMesh) return;
+        if (!object.userData.originalMaterial) object.userData.originalMaterial = object.material;
+        object.material = object.userData.originalMaterial;
+      });
+      updatePigBar(team.pig);
+    }
+    if (team.islandGroup) team.islandGroup.visible = team.active;
+  }
+  for (const chip of document.querySelectorAll('.team-chip')) {
+    const team = teams.find((entry) => entry.id === chip.dataset.teamId);
+    chip.classList.toggle('hidden', !team?.active);
+  }
+  renderTeamStatus();
 }
 
 function createWorld() {
@@ -316,31 +391,38 @@ function createWorld() {
     makeMesh(new THREE.BoxGeometry(1.25, 0.22, 1.25), new THREE.MeshLambertMaterial({ color: team.color, flatShading: true }), generator, 0, 0.86, 0);
     addSpriteLabel('GENERATOR', team.color, generator, 0, 1.75, 0, 3.3);
     scene.add(generator);
+    team.generator = generator;
     team.pig = createPig(team);
     team.shop = team.id === 'green' ? createShopkeeper(team) : null;
-    team.bot = team.id === 'green' ? null : createBot(team);
+    createBot(team, 0);
+    if (team.id === 'green' || team.id === 'blue') createBot(team, 1);
   }
-  createStars();
+  createSkyClouds();
   createDecorations();
+  configureMatchMode(selectedMatchMode);
 }
 
-function createStars() {
-  const positions = new Float32Array(1100 * 3);
-  for (let i = 0; i < positions.length; i += 3) {
-    const radius = 90 + Math.random() * 130;
-    const theta = Math.random() * Math.PI * 2;
-    const y = (Math.random() - 0.5) * 160;
-    positions[i] = Math.cos(theta) * radius;
-    positions[i + 1] = y;
-    positions[i + 2] = Math.sin(theta) * radius;
+function createSkyClouds() {
+  const cloudMaterial = new THREE.MeshLambertMaterial({ color: '#f5fcff', flatShading: true });
+  for (let cloudIndex = 0; cloudIndex < 20; cloudIndex++) {
+    const cloud = new THREE.Group();
+    const angle = cloudIndex * 2.399;
+    const radius = 78 + (cloudIndex % 4) * 12;
+    const x = Math.cos(angle) * radius;
+    const z = Math.sin(angle) * radius;
+    const y = 30 + (cloudIndex % 5) * 5;
+    for (let puff = 0; puff < 5; puff++) {
+      const width = 3.8 + ((cloudIndex + puff) % 3) * 1.1;
+      makeMesh(new THREE.BoxGeometry(width, 1.1 + (puff % 2) * 0.55, 3.2),
+        cloudMaterial, cloud, (puff - 2) * 2.5, (puff % 2) * 0.55, (puff % 3 - 1) * 1.15);
+    }
+    cloud.position.set(x, y, z);
+    scene.add(cloud);
   }
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  scene.add(new THREE.Points(geometry, new THREE.PointsMaterial({ color: '#c6d4ff', size: 0.65, sizeAttenuation: true })));
 }
 
 function createDecorations() {
-  const rockMat = new THREE.MeshLambertMaterial({ color: '#514965', flatShading: true });
+  const rockMat = new THREE.MeshLambertMaterial({ color: '#627d82', flatShading: true });
   for (const team of teams) {
     for (let i = 0; i < 4; i++) {
       const angle = (Math.PI * 2 * i) / 4 + 0.45;
@@ -372,9 +454,10 @@ function updatePickups(time, delta) {
       pickups.splice(i, 1);
       continue;
     }
-    const collector = teams.find((team) => team.bot?.alive && pickup.teamId === team.id);
-    if (collector && pickup.mesh.position.distanceTo(collector.bot.group.position) < 1.7) {
-      collector.bot[pickup.resource] += pickup.amount;
+    const collector = entities.find((bot) => bot.active && bot.alive && pickup.teamId === bot.team.id &&
+      pickup.mesh.position.distanceTo(bot.group.position) < 1.7);
+    if (collector) {
+      collector[pickup.resource] += pickup.amount;
       scene.remove(pickup.mesh);
       pickups.splice(i, 1);
       continue;
@@ -400,6 +483,8 @@ function makeBlock(x, y, z, material = materials.wool, fromPlayer = false) {
 function supportAt(x, z, feetY) {
   let highest = -Infinity;
   for (const surface of worldSurfaces) {
+    if ((surface.mesh && !surface.mesh.visible) ||
+        (surface.teamId && !teams.find((team) => team.id === surface.teamId)?.active)) continue;
     let withinSurface;
     if (surface.octagon) {
       const dx = x - surface.x;
@@ -425,7 +510,8 @@ function getBlockPlacement() {
   const reach = 7;
   raycaster.setFromCamera(centerScreen, camera);
   raycaster.far = reach;
-  const targets = worldSurfaces.map((surface) => surface.mesh).filter(Boolean);
+  const targets = worldSurfaces.filter((surface) => surface.mesh &&
+    (!surface.teamId || teams.find((team) => team.id === surface.teamId)?.active)).map((surface) => surface.mesh);
   const hits = raycaster.intersectObjects(targets, false);
   const hit = hits[0];
   if (!hit || hit.distance > reach) {
@@ -539,8 +625,8 @@ function getAimTarget() {
 
 function getCombatTargets() {
   const targets = [];
-  for (const pig of pigs) if (pig.alive) targets.push(...pig.group.children);
-  for (const entity of entities) if (entity.alive) targets.push(...entity.group.children);
+  for (const pig of pigs) if (pig.alive && pig.team.active) targets.push(...pig.group.children);
+  for (const entity of entities) if (entity.active && entity.alive) targets.push(...entity.group.children);
   return targets;
 }
 
@@ -651,7 +737,8 @@ function knockOutBot(bot, now) {
   if (bot.team.pig.alive) {
     bot.respawnAt = now + 4;
     showToast(`${bot.team.name} bot down! It will respawn.`);
-  } else {
+  } else if (bot.team.bots.every((teammate) => !teammate.active || !teammate.alive) &&
+      (!bot.team.playerControlled || !state.alive)) {
     bot.team.eliminated = true;
     showToast(`${bot.team.name} team eliminated!`);
   }
@@ -698,8 +785,10 @@ function knockbackBot(bot, sourceX, sourceZ, force) {
 }
 
 function checkEliminations() {
-  for (const team of teams) {
-    if (team.id !== 'green' && !team.pig.alive && team.bot && !team.bot.alive) {
+  for (const team of activeTeams()) {
+    const botsOut = team.bots.every((bot) => !bot.active || !bot.alive);
+    const playerOut = team.playerControlled && !state.alive;
+    if (!team.pig.alive && botsOut && playerOut) {
       team.eliminated = true;
     }
   }
@@ -709,9 +798,12 @@ function checkEliminations() {
 
 function checkEndState() {
   if (!state.started || state.mode !== 'playing') return;
-  if (!teams[0].pig.alive && !state.alive) return endGame(false);
-  const remaining = teams.filter((team) => team.id === 'green' || !team.eliminated);
-  if (remaining.length === 1) endGame(true);
+  const playerTeam = teams[0];
+  if (!playerTeam.pig.alive && !state.alive &&
+      playerTeam.bots.every((bot) => !bot.active || !bot.alive)) playerTeam.eliminated = true;
+  const remaining = activeTeams().filter((team) => !team.eliminated);
+  if (playerTeam.eliminated) return endGame(false);
+  if (remaining.length === 1 && remaining[0] === playerTeam) endGame(true);
 }
 
 function endGame(won) {
@@ -755,6 +847,7 @@ function hurtPlayer(amount, sourceX = camera.position.x, sourceZ = camera.positi
       showToast('You were knocked out! Respawning in 5 seconds…');
     } else {
       showToast('Your pig is gone. No respawns left.');
+      checkEliminations();
       checkEndState();
     }
   }
@@ -768,7 +861,8 @@ function botRespawn(bot) {
   bot.velocityY = 0;
   bot.onGround = true;
   bot.group.visible = true;
-  bot.group.position.set(bot.team.x + (bot.team.x < 0 ? 2 : bot.team.x > 0 ? -2 : 1), 0, bot.team.z + (bot.team.z < 0 ? 2 : bot.team.z > 0 ? -2 : 1));
+  const spawn = botHomePosition(bot.team, bot.slot);
+  bot.group.position.set(spawn.x, 0, spawn.z);
   showToast(`${bot.team.name} bot respawned.`);
 }
 
@@ -918,9 +1012,9 @@ function botTakeHit(bot, target, now) {
 }
 
 function moveBots(delta, now) {
-  for (const team of teams) {
-    const bot = team.bot;
-    if (!bot) continue;
+  for (const bot of entities) {
+    if (!bot.active) continue;
+    const team = bot.team;
     if (!bot.alive) {
       if (team.pig.alive && now >= bot.respawnAt) botRespawn(bot);
       continue;
@@ -928,10 +1022,11 @@ function moveBots(delta, now) {
 
     purchaseBotGear(bot, now);
     const pos = bot.group.position;
-    const enemies = entities.filter((enemy) => enemy !== bot && enemy.alive && enemy.team.id !== team.id &&
+    const enemies = entities.filter((enemy) => enemy !== bot && enemy.active && enemy.alive && enemy.team.id !== team.id &&
       (Math.hypot(enemy.group.position.x - pos.x, enemy.group.position.z - pos.z) < 10 ||
        Math.hypot(enemy.group.position.x - team.pig.x, enemy.group.position.z - team.pig.z) < 14));
-    if (state.alive && (Math.hypot(camera.position.x - pos.x, camera.position.z - pos.z) < 10 ||
+    if (team.id !== 'green' && state.alive &&
+        (Math.hypot(camera.position.x - pos.x, camera.position.z - pos.z) < 10 ||
         Math.hypot(camera.position.x - team.pig.x, camera.position.z - team.pig.z) < 14)) {
       enemies.push({ kind: 'player', team: teams[0], group: { position: camera.position } });
     }
@@ -949,7 +1044,8 @@ function moveBots(delta, now) {
     }
     let targetPig = bot.targetPig;
     if (!targetPig || !targetPig.alive || now > bot.nextTargetAt) {
-      const candidates = pigs.filter((pig) => pig.team.id !== team.id && pig.alive);
+      const candidates = activeTeams().map((activeTeam) => activeTeam.pig)
+        .filter((pig) => pig && pig.team.id !== team.id && pig.alive);
       targetPig = candidates.sort((a, b) =>
         Math.hypot(a.x - pos.x, a.z - pos.z) - Math.hypot(b.x - pos.x, b.z - pos.z) ||
         a.health - b.health)[0] ?? null;
@@ -1078,7 +1174,8 @@ function usePearl() {
   if (state.player.pearls < 1) return showToast('No ender pearls left.');
   raycaster.setFromCamera(centerScreen, camera);
   raycaster.far = 24;
-  const surfaces = worldSurfaces.map((surface) => surface.mesh).filter(Boolean);
+  const surfaces = worldSurfaces.filter((surface) => surface.mesh &&
+    (!surface.teamId || teams.find((team) => team.id === surface.teamId)?.active)).map((surface) => surface.mesh);
   const hit = raycaster.intersectObjects(surfaces, false).find((entry) =>
     entry.face.normal.clone().transformDirection(entry.object.matrixWorld).y > 0.8);
   if (!hit) return showToast('Aim at a landing surface within 24 blocks.');
@@ -1118,13 +1215,17 @@ function throwFireball() {
     if (age > 0.7 || ball.position.distanceTo(start) > 10) {
       scene.remove(ball);
       for (const bot of entities) {
-        if (bot.alive && bot.group.position.distanceTo(ball.position) < 4) {
+        if (bot.active && bot.alive && bot.group.position.distanceTo(ball.position) < 4) {
           bot.health = Math.max(0, bot.health - Math.ceil(45 * (1 - bot.armor)));
           knockbackBot(bot, ball.position.x, ball.position.z, 5);
           if (!bot.health) knockOutBot(bot, performance.now() / 1000);
         }
       }
-      for (const pig of pigs) if (pig.alive && pig.group.position.distanceTo(ball.position) < 4) damagePig(pig, 35, 'Fireball');
+      for (const pig of pigs) {
+        if (pig.team.active && pig.alive && pig.group.position.distanceTo(ball.position) < 4) {
+          damagePig(pig, 35, 'Fireball');
+        }
+      }
       for (let i = 0; i < 8; i++) {
         const angle = (i / 8) * Math.PI * 2;
         makeBlock(Math.round(ball.position.x + Math.cos(angle)), Math.round(ball.position.y - 0.6), Math.round(ball.position.z + Math.sin(angle)),
@@ -1246,9 +1347,10 @@ function updateHotbar() {
 function renderTeamStatus() {
   const container = $('#team-status');
   container.innerHTML = '';
-  for (const team of teams) {
+  for (const team of activeTeams()) {
     const chip = document.createElement('span');
     chip.className = `team-chip${team.eliminated ? ' out' : ''}`;
+    chip.dataset.teamId = team.id;
     chip.innerHTML = `<i style="background:${team.color}"></i>${team.name} ${team.pig.alive ? '♥' : '×'}`;
     container.append(chip);
   }
@@ -1300,15 +1402,14 @@ function updateGenerator(time) {
     state.lastCentralGen = time;
     spawnPickup('emerald', 0, 0, 1, '#55f0a2', 1.2);
   }
-  for (const team of teams) {
-    const bot = team.bot;
-    if (!bot || !team.pig.alive) continue;
-    if (time - bot.lastIronGen > 2.3) {
-      bot.lastIronGen = time;
+  for (const team of activeTeams()) {
+    if (!team.bots.some((bot) => bot.active) || !team.pig.alive) continue;
+    if (time - team.lastIronGen > 2.3) {
+      team.lastIronGen = time;
       spawnPickup('iron', team.x, team.z, 1, '#d9e1ef', 0.55, team.id);
     }
-    if (time - bot.lastGoldGen > 8) {
-      bot.lastGoldGen = time;
+    if (time - team.lastGoldGen > 8) {
+      team.lastGoldGen = time;
       spawnPickup('gold', team.x, team.z, 1, '#ffd04c', 0.75, team.id);
     }
   }
@@ -1403,14 +1504,14 @@ function startGame() {
   const firstStart = !state.started;
   state.started = true;
   state.mode = 'playing';
+  $('.match-picker').classList.add('hidden');
   overlay.classList.add('hidden');
   hud.classList.remove('hidden');
   canvas.focus({ preventScroll: true });
   const now = performance.now() / 1000;
-  for (const team of teams) {
-    if (team.bot && firstStart) {
-      team.bot.group.position.set(team.x, 0, team.z);
-      team.bot.prepareUntil = now + 12;
+  if (firstStart) {
+    for (const bot of entities) {
+      if (bot.active) bot.prepareUntil = now + 12;
     }
   }
   state.lastIronGen = now;
@@ -1418,6 +1519,7 @@ function startGame() {
   state.lastCentralGen = now;
   updateHotbar();
   renderTeamStatus();
+  $('#objective').textContent = `${matchModes[selectedMatchMode].label} · Protect your pig!`;
   requestGamePointerLock();
   showNotice('Collect iron at your generator. Keep an eye on your pig!');
 }
@@ -1433,6 +1535,7 @@ document.addEventListener('pointerlockchange', () => {
       !state.pointerLockPending && !state.fallbackAvailable) {
     overlayTitle.textContent = 'PAUSED';
     overlayCopy.textContent = 'Click resume when you are ready to jump back in.';
+    $('.match-picker').classList.add('hidden');
     startButton.textContent = 'RESUME';
     overlay.classList.remove('hidden');
   }
@@ -1539,6 +1642,18 @@ document.addEventListener('wheel', (event) => {
   updateHotbar();
 }, { passive: true });
 startButton.addEventListener('click', startGame);
+for (const button of document.querySelectorAll('[data-match-mode]')) {
+  button.addEventListener('click', () => {
+    if (state.started) return;
+    configureMatchMode(button.dataset.matchMode);
+    for (const card of document.querySelectorAll('[data-match-mode]')) {
+      const selected = card === button;
+      card.classList.toggle('selected', selected);
+      card.setAttribute('aria-pressed', String(selected));
+    }
+    overlayCopy.textContent = `${matchModes[selectedMatchMode].label}: protect your pig, gather resources, and build your own way across the void.`;
+  });
+}
 $('#close-shop').addEventListener('click', closeShop);
 $('#help-button').addEventListener('click', () => showNotice('WASD move · Shift sneak/edge guard · Mouse/drag or arrows look · F/click attack · G/right-click build · E shop · H utility'));
 $('#settings-button').addEventListener('click', openSettings);

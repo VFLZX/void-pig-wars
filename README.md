@@ -1,6 +1,6 @@
 # Void Pig Wars
 
-A small, playable first-person voxel arena game. Four teams fight across floating islands above the void; protect your team's pig, gather generator resources, and take out the other teams' pigs. Pixel-textured grass, dirt, and stone plus a blocky held weapon give the arena a voxel look. There are no prebuilt bridges to the central emerald island: build your own route with snap-aligned half-block wool tiles. A cyan placement ghost marks valid placement; red means blocked.
+A first-person voxel arena game set on floating islands beneath a bright, light-blue sky. Choose a match in the lobby before playing: **1v1** puts you against one rival, **Doubles (2v2)** gives you a bot teammate against a two-bot team, and **1v1v1v1** enables all four rival islands. Protect your team's pig, gather generator resources, and destroy enemy pigs. Pixel-textured grass, dirt, and stone, square islands, blocky clouds, and team-colored details give the arena a brighter Minecraft-inspired look. There are no prebuilt bridges to the central emerald island: build your own route with snap-aligned half-block wool tiles. A cyan placement ghost marks valid placement; red means blocked.
 
 ## Play online with GitHub Pages
 

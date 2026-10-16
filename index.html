@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#101426" />
+    <meta name="theme-color" content="#8ed5f2" />
     <title>Void Pig Wars</title>
     <link rel="stylesheet" href="./style.css" />
   </head>
@@ -59,11 +59,20 @@
           <div class="pig-emblem">🐷</div>
           <p class="eyebrow">A VOXEL VOID SHOWDOWN</p>
           <h1 id="overlay-title">VOID PIG WARS</h1>
-          <p id="overlay-copy" class="overlay-copy">
-            Four teams. Four pigs. Build your own way to the emerald island.
-          </p>
+          <p id="overlay-copy" class="overlay-copy">Choose your match, protect your pig, and build your own way across the void.</p>
+          <div class="match-picker" role="group" aria-label="Select match mode">
+            <button class="match-card" type="button" data-match-mode="solo" aria-pressed="false">
+              <strong>1v1</strong><span>Solo duel</span><small>One rival team</small>
+            </button>
+            <button class="match-card" type="button" data-match-mode="doubles" aria-pressed="false">
+              <strong>DOUBLES</strong><span>2v2</span><small>Bring a bot teammate</small>
+            </button>
+            <button class="match-card selected" type="button" data-match-mode="ffa" aria-pressed="true">
+              <strong>1v1v1v1</strong><span>Free-for-all</span><small>Four rival islands</small>
+            </button>
+          </div>
           <button id="menu-settings-button" class="secondary-button">SETTINGS</button>
-          <button id="start-button" class="primary-button">DROP IN</button>
+          <button id="start-button" class="primary-button">START MATCH</button>
           <div class="control-guide">
             <span><kbd>W A S D</kbd> Move</span><span><kbd>SHIFT</kbd> Sneak safely</span><span><kbd>SPACE</kbd> Jump</span>
             <span><kbd>MOUSE / DRAG</kbd> Look</span><span><kbd>ARROWS</kbd> Look backup</span>

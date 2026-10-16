@@ -2,15 +2,15 @@
   color-scheme: dark;
   font-family: 'Segoe UI', sans-serif;
   color: #f5f5f7;
-  --panel: rgba(17, 20, 37, 0.94);
-  --line: rgba(255, 255, 255, 0.14);
-  --muted: #a4a8bb;
+  --panel: rgba(20, 42, 66, 0.95);
+  --line: rgba(206, 240, 255, 0.2);
+  --muted: #b8d4e3;
   --mint: #76f2b2;
 }
 
 * { box-sizing: border-box; }
 html, body, #game { width: 100%; height: 100%; margin: 0; overflow: hidden; }
-body { background: #101426; }
+body { background: #8ed5f2; }
 button { font: inherit; }
 #world { display: block; width: 100%; height: 100%; image-rendering: pixelated; cursor: crosshair; touch-action: none; outline: none; }
 #world:focus-visible { outline: 2px solid #9bf3c2; outline-offset: -2px; }
@@ -61,11 +61,18 @@ button { font: inherit; }
 .interaction { position: absolute; bottom: 104px; left: 50%; transform: translateX(-50%); padding: 7px 12px; border-radius: 6px; background: #131629d9; font-size: 12px; color: #edf0f5; white-space: nowrap; }
 .notice { position: absolute; top: 75px; left: 50%; transform: translateX(-50%); color: #d9dbeb; padding: 9px 14px; background: #171b30ed; border: 1px solid var(--line); border-radius: 2px; font-size: 12px; opacity: 0; transition: opacity .2s; pointer-events: none; }
 .notice.show { opacity: 1; }
-.overlay { position: absolute; inset: 0; display: grid; place-items: center; background: radial-gradient(ellipse at center, #17172de0 0%, #0a0d1ceF 75%); }
-.overlay-card { width: min(600px, calc(100% - 34px)); text-align: center; padding: 36px 34px 30px; border: 3px solid #ffffff28; border-radius: 2px; background: #171a2bf2; box-shadow: 5px 5px 0 #080b17, 0 25px 100px #0007; }
+.overlay { position: absolute; inset: 0; display: grid; place-items: center; overflow-y: auto; padding: 18px 0; background: linear-gradient(180deg, #d5f2ff35 0%, #10243bc9 100%); }
+.overlay-card { width: min(680px, calc(100% - 34px)); text-align: center; padding: 26px 34px 24px; border: 2px solid #d9f3ff66; border-radius: 5px; background: linear-gradient(160deg, #23466aF5, #111e35f7); box-shadow: 0 6px 0 #10233c, 0 25px 80px #173b5970; }
 .pig-emblem { font-size: 48px; margin-bottom: 5px; filter: drop-shadow(0 7px 12px #fb6d8060); }
 h1 { margin: 9px 0 11px; font-size: clamp(28px, 6vw, 46px); letter-spacing: .04em; }
 .overlay-copy { margin: 0 auto 23px; color: #b9bdce; font-size: 14px; }
+.match-picker { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 0 0 20px; }
+.match-card { display: grid; justify-items: center; gap: 5px; min-height: 92px; padding: 12px 8px; border: 1px solid #d9f3ff4d; border-radius: 4px; color: #ecf8ff; background: #ffffff0a; cursor: pointer; transition: background .15s, border-color .15s, transform .15s; }
+.match-card:hover { border-color: #b8e9ff; background: #ffffff16; transform: translateY(-2px); }
+.match-card.selected { border: 2px solid #9af0cf; background: #71e4b228; box-shadow: inset 0 0 18px #71e4b21a; }
+.match-card strong { font-size: 17px; letter-spacing: .04em; }
+.match-card span { color: #d9edf8; font-size: 12px; }
+.match-card small { color: #a9c5d6; font-size: 10px; }
 .primary-button { border: 2px solid #bbffda; border-radius: 2px; padding: 13px 37px; color: #101426; background: var(--mint); font-size: 13px; font-weight: 700; letter-spacing: .1em; cursor: pointer; box-shadow: 0 4px 0 #318158; }
 .primary-button:hover { background: #a5ffd0; transform: translateY(-1px); box-shadow: 0 5px 0 #318158; }
 .secondary-button { border: 1px solid #ffffff45; border-radius: 2px; padding: 12px 21px; color: #e9edf8; background: #ffffff0d; font-size: 11px; font-weight: 700; letter-spacing: .08em; cursor: pointer; }
@@ -105,12 +112,14 @@ kbd { padding: 3px 5px; border: 1px solid #ffffff36; border-radius: 4px; backgro
   .stance-indicator { padding: 5px; font-size: 8px; }
   .left-hud { top: 87px; left: 10px; width: 150px; }.stat-card, .resource-card { padding: 9px; }
   .overlay-card { padding: 26px 18px 22px; }.control-guide { gap: 10px; }
+  .match-picker { gap: 6px; }.match-card { padding: 10px 5px; }.match-card strong { font-size: 14px; }.match-card span { font-size: 10px; }
   .slot { width: 53px; height: 56px; }.hotbar { bottom: 18px; gap: 5px; }
   .binding-list { grid-template-columns: 1fr; }
   .settings-section-title { align-items: flex-start; flex-direction: column; gap: 4px; }
 }
 
 @media (max-width: 430px) {
+  .match-card { min-height: 82px; }.match-card small { font-size: 8px; }
   .slot { width: 41px; height: 49px; }
   .hotbar { gap: 3px; }
   .slot .slot-icon { font-size: 17px; }
