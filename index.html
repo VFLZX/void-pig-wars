@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#101426" />
+    <title>Void Pig Wars</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main id="game">
+      <canvas id="world" tabindex="0" aria-label="Void Pig Wars 3D game"></canvas>
+
+      <section id="hud" class="hidden" aria-live="polite">
+        <header class="topbar">
+          <div class="brand"><span class="brand-mark">✦</span> VOID PIG WARS</div>
+          <div id="team-status" class="team-status"></div>
+          <div class="top-right">
+            <span id="stance-indicator" class="stance-indicator hidden">SNEAKING · EDGE SAFE</span>
+            <span id="heading-indicator" class="heading-indicator">E</span>
+            <span id="objective">Protect your pig!</span>
+            <button id="settings-button" class="icon-button" title="Settings" aria-label="Settings">⚙</button>
+            <button id="help-button" class="icon-button" title="Controls">?</button>
+          </div>
+        </header>
+        <div class="left-hud">
+          <div class="stat-card">
+            <span class="stat-label">HEALTH</span>
+            <div class="health-track"><div id="health-fill"></div></div>
+            <strong id="health-text">100</strong>
+          </div>
+          <div class="resource-card">
+            <span><b class="iron-dot"></b><strong id="iron-count">0</strong> Iron</span>
+            <span><b class="gold-dot"></b><strong id="gold-count">0</strong> Gold</span>
+            <span><b class="emerald-dot"></b><strong id="emerald-count">0</strong> Emerald</span>
+          </div>
+        </div>
+        <div id="notice" class="notice"></div>
+        <div id="interaction" class="interaction"></div>
+        <div id="crosshair" class="crosshair"><i></i><i></i><i></i><i></i></div>
+        <nav id="hotbar" class="hotbar" aria-label="Inventory"></nav>
+      </section>
+
+      <section id="shop" class="panel hidden">
+        <div class="panel-heading">
+          <div>
+            <span class="eyebrow">BASE TRADING POST</span>
+            <h2>Hey, builder!</h2>
+          </div>
+          <button id="close-shop" class="icon-button" aria-label="Close shop">×</button>
+        </div>
+        <p class="panel-subtitle">Trade your generator loot for an edge.</p>
+        <div id="shop-items" class="shop-items"></div>
+        <p class="shop-footnote">Press <kbd>E</kbd> to close · Purchases are added to your hotbar</p>
+      </section>
+
+      <section id="overlay" class="overlay">
+        <div class="overlay-card">
+          <div class="pig-emblem">🐷</div>
+          <p class="eyebrow">A VOXEL VOID SHOWDOWN</p>
+          <h1 id="overlay-title">VOID PIG WARS</h1>
+          <p id="overlay-copy" class="overlay-copy">
+            Four teams. Four pigs. Build your own way to the emerald island.
+          </p>
+          <button id="menu-settings-button" class="secondary-button">SETTINGS</button>
+          <button id="start-button" class="primary-button">DROP IN</button>
+          <div class="control-guide">
+            <span><kbd>W A S D</kbd> Move</span><span><kbd>SHIFT</kbd> Sneak safely</span><span><kbd>SPACE</kbd> Jump</span>
+            <span><kbd>MOUSE / DRAG</kbd> Look</span><span><kbd>ARROWS</kbd> Look backup</span>
+            <span><kbd>CLICK / F</kbd> Attack</span><span><kbd>RIGHT CLICK / G</kbd> Build</span>
+            <span><kbd>E</kbd> Shop</span><span><kbd>H</kbd> Utility</span><span><kbd>1–7</kbd> Hotbar</span>
+          </div>
+        </div>
+      </section>
+
+      <section id="settings" class="panel settings-panel hidden" aria-label="Game settings">
+        <div class="panel-heading">
+          <div><span class="eyebrow">PLAYER OPTIONS</span><h2>Settings</h2></div>
+          <button id="close-settings" class="icon-button" aria-label="Close settings">×</button>
+        </div>
+        <label class="fov-control" for="fov-slider">
+          <span>Field of view <strong id="fov-value">76°</strong></span>
+          <input id="fov-slider" type="range" min="60" max="105" step="1" value="76" />
+        </label>
+        <h3 class="settings-section-title">KEYBOARD BINDS <small>Click a key, then press its replacement</small></h3>
+        <div id="binding-list" class="binding-list"></div>
+        <div class="settings-actions">
+          <button id="reset-bindings" class="secondary-button">RESET DEFAULTS</button>
+          <button id="done-settings" class="primary-button">DONE</button>
+        </div>
+      </section>
+
+      <div id="toast" class="toast"></div>
+      <div id="version">EARLY ACCESS · 1.0</div>
+    </main>
+    <script type="module" src="./game.js"></script>
+  </body>
+</html>
