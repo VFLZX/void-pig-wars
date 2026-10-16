@@ -2,20 +2,15 @@
 
 A small, playable first-person voxel arena game. Four teams fight across floating islands above the void; protect your team's pig, gather generator resources, and take out the other teams' pigs. Pixel-textured grass, dirt, and stone plus a blocky held weapon give the arena a voxel look. There are no prebuilt bridges to the central emerald island: build your own route with snap-aligned half-block wool tiles. A cyan placement ghost marks valid placement; red means blocked.
 
-## Publish as a website
+## Play online with GitHub Pages
 
-This is a static website: the folder already contains the deployable site and needs no build step, backend, or application server. Upload the folder's contents (`index.html`, `game.js`, and `style.css`) to any static host, keeping the three files together. The HTML and CSS use relative asset paths, so the game can also be hosted from a project subpath such as GitHub Pages.
+This repository is a self-contained static site. GitHub Pages serves it directly from the `main` branch root; no build step, backend, external fonts, or network access is needed to run the game.
 
-- **Netlify Drop:** upload this project folder at <https://app.netlify.com/drop> to get a public site URL.
-- **GitHub Pages:** if this folder is later placed in a GitHub repository, push the files and select **Settings → Pages → Deploy from a branch**, then choose the branch and `/ (root)` folder. GitHub Pages publishes the site at the repository's Pages URL.
-
-Publishing requires an account with the chosen host and permission to make the site public. No site or repository has been published from this project.
-
-Three.js is imported from jsDelivr and the fonts are loaded from Google Fonts, so visitors need an internet connection for those external assets. The game itself is served as static files; it has no server-side runtime or build dependency.
+The live game is hosted at <https://vflzx.github.io/void-pig-wars/>.
 
 ## Preview locally
 
-Python 3 is enough; no build step or package installation is required. From this folder, run:
+Python 3 is enough for a local preview. From this folder, run:
 
 ```powershell
 python -m http.server 8000
