@@ -1,0 +1,86 @@
+body {
+  background:
+    radial-gradient(circle at top, rgba(182, 235, 255, 0.7), transparent 28%),
+    linear-gradient(180deg, #93d8ff 0%, #7bc5ef 30%, #6ca8d5 100%);
+}
+
+#game {
+  filter: saturate(1.08) contrast(1.04);
+}
+
+#world {
+  filter: saturate(1.12) contrast(1.08) brightness(1.04);
+  box-shadow: inset 0 0 70px rgba(9, 25, 39, 0.17);
+}
+
+#hud .topbar,
+#hud .left-hud,
+#hud .interaction,
+#hud .notice,
+#hud .hotbar,
+#hud .toast,
+#hud .queue-status,
+#hud #version {
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.25);
+}
+
+.overlay-card,
+.panel,
+.shop-item,
+.match-card,
+.primary-button,
+.secondary-button,
+.icon-button,
+.slot,
+.binding-key,
+.queue-status {
+  box-shadow: 0 12px 30px rgba(4, 10, 22, 0.18);
+}
+
+.overlay-card,
+.panel {
+  border-radius: 14px;
+}
+
+.match-card {
+  background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02));
+}
+
+.match-card.selected {
+  border-color: rgba(148, 255, 203, 0.9);
+  box-shadow: inset 0 0 18px rgba(148, 255, 203, 0.15), 0 12px 30px rgba(4, 10, 22, 0.18);
+}
+
+.primary-button {
+  box-shadow: 0 8px 0 rgba(40, 107, 70, 0.8);
+}
+
+.primary-button:hover {
+  transform: translateY(-1px);
+}
+
+.secondary-button,
+.icon-button,
+.slot,
+.binding-key,
+.shop-item button,
+.touch-action {
+  background-image: linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.02));
+}
+
+#version {
+  filter: drop-shadow(0 2px 8px rgba(0,0,0,0.3));
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  #world,
+  .primary-button,
+  .match-card,
+  .slot,
+  .icon-button,
+  .secondary-button,
+  .notice,
+  .toast {
+    transition: transform .12s ease, filter .12s ease, box-shadow .12s ease, opacity .12s ease;
+  }
+}
