@@ -138,6 +138,10 @@ const raycaster = new THREE.Raycaster();
 const centerScreen = new THREE.Vector2(0, 0);
 const worldSurfaces = [];
 const buildMeshes = [];
+let botNavigationRevision = 0;
+let botNavigationSurfaceCache = null;
+let botNavigationBlockerCache = new Map();
+let botNavigationCacheRevision = -1;
 const pickups = [];
 const entities = [];
 const pigs = [];
@@ -350,10 +354,13 @@ function createBot(team, slot = 0) {
   const bot = {
     team, slot, active: false, group, health: 100, maxHealth: 100, alive: true, respawnAt: 0, attackAt: 0, hitAt: 0,
     objectiveType: null, objectiveTarget: null, objectiveKey: null, nextObjectiveAt: 0,
+    route: null, routeIndex: 0, routeRevision: -1, routeNextPlanAt: 0,
+    routeTargetX: 0, routeTargetZ: 0, routeObjectiveKey: null,
+    routeLastProgressAt: 0, routeLastDistance: Infinity,
     aggression: 0.85 + Math.random() * 0.3,
     caution: 0.85 + Math.random() * 0.3,
     resourcefulness: 0.85 + Math.random() * 0.3,
-    combatTarget: null,
+    combatTarget: null, apples: 0, nextHealAt: 0,
     iron: 1, gold: 0, emerald: 0, blocks: 48,
     weapon: 10, armor: 0, velocityY: 0, velocityX: 0, velocityZ: 0, onGround: true, jumpCooldown: 0,
     lastIronGen: 0, lastGoldGen: 0, nextPurchaseAt: 0, blockMaterial: new THREE.MeshLambertMaterial({ color: team.color, flatShading: true }),
@@ -368,10 +375,12 @@ function createBot(team, slot = 0) {
 function configureMatchMode(mode, onlineTeams = null) {
   selectedMatchMode = matchModes[mode] ? mode : 'ffa';
   const config = matchModes[selectedMatchMode];
+  botNavigationRevision++;
   for (const team of teams) {
     team.active = config.activeTeams.includes(team.id);
     team.playerControlled = onlineTeams ? onlineTeams.includes(team.id) : team.id === 'green';
     team.eliminated = false;
+    if (team.shop) team.shop.visible = team.active;
     if (team.pig?.group) team.pig.group.visible = team.active;
     if (team.generator) team.generator.visible = team.active;
     const botCount = onlineTeams ? 0 : config.botCounts[team.id] || 0;
@@ -386,6 +395,11 @@ function configureMatchMode(mode, onlineTeams = null) {
       bot.objectiveTarget = null;
       bot.objectiveKey = null;
       bot.nextObjectiveAt = 0;
+      bot.route = null;
+      bot.routeIndex = 0;
+      bot.routeRevision = -1;
+      bot.routeNextPlanAt = 0;
+      bot.routeObjectiveKey = null;
       bot.group.visible = bot.active;
       const spawn = botHomePosition(team, bot.slot);
       bot.group.position.set(spawn.x, 0, spawn.z);
@@ -808,7 +822,7 @@ function createWorld() {
     scene.add(generator);
     team.generator = generator;
     team.pig = createPig(team);
-    team.shop = team.id === 'green' ? createShopkeeper(team) : null;
+    team.shop = createShopkeeper(team);
     createBot(team, 0);
     if (team.id === 'green' || team.id === 'blue') createBot(team, 1);
   }
@@ -892,6 +906,7 @@ function makeBlock(x, y, z, material = materials.wool, fromPlayer = false) {
   mesh.userData.isBlock = true;
   buildMeshes.push(mesh);
   worldSurfaces.push({ x, z, width: 0.5, depth: 0.5, top: y + 0.25, mesh });
+  botNavigationRevision++;
   if (fromPlayer) {
     mesh.material = new THREE.MeshLambertMaterial({ color: playerTeam().color, flatShading: true });
   }
@@ -1325,6 +1340,13 @@ function hurtPlayer(amount, sourceX = camera.position.x, sourceZ = camera.positi
 function botRespawn(bot) {
   bot.alive = true;
   bot.health = 100;
+  bot.objectiveType = null;
+  bot.objectiveTarget = null;
+  bot.objectiveKey = null;
+  bot.nextObjectiveAt = 0;
+  bot.route = null;
+  bot.routeIndex = 0;
+  bot.routeRevision = -1;
   bot.velocityX = 0;
   bot.velocityZ = 0;
   bot.velocityY = 0;
@@ -1414,13 +1436,274 @@ function isBlocked(x, z, feet) {
   return false;
 }
 
+function botNavigationKey(gx, gz) {
+  return `${gx},${gz}`;
+}
+
+function botNavigationNodeMap() {
+  if (botNavigationSurfaceCache && botNavigationCacheRevision === botNavigationRevision) {
+    return botNavigationSurfaceCache;
+  }
+  const nodes = new Map();
+  const blockers = new Map();
+  for (const surface of worldSurfaces) {
+    if ((surface.mesh && !surface.mesh.visible) ||
+        (surface.teamId && !teams.find((team) => team.id === surface.teamId)?.active)) continue;
+    const minGX = Math.ceil((surface.x - surface.width / 2 - 0.25) * 2);
+    const maxGX = Math.floor((surface.x + surface.width / 2 - 0.25) * 2);
+    const minGZ = Math.ceil((surface.z - surface.depth / 2 - 0.25) * 2);
+    const maxGZ = Math.floor((surface.z + surface.depth / 2 - 0.25) * 2);
+    for (let gx = minGX; gx <= maxGX; gx++) {
+      const x = 0.25 + gx * 0.5;
+      for (let gz = minGZ; gz <= maxGZ; gz++) {
+        const z = 0.25 + gz * 0.5;
+        if (surface.octagon) {
+          const dx = x - surface.x;
+          const dz = z - surface.z;
+          const apothem = 13 * Math.cos(Math.PI / 8);
+          if (![0, 1, 2, 3].every((side) => {
+            const angle = side * Math.PI / 4;
+            return Math.abs(dx * Math.cos(angle) + dz * Math.sin(angle)) <= apothem;
+          })) continue;
+        }
+        const key = botNavigationKey(gx, gz);
+        const prior = nodes.get(key);
+        if (!prior || surface.top > prior.y) nodes.set(key, { gx, gz, x, z, y: surface.top });
+      }
+    }
+  }
+  for (const block of buildMeshes) {
+    const centerGX = Math.round((block.position.x - 0.25) * 2);
+    const centerGZ = Math.round((block.position.z - 0.25) * 2);
+    for (let gx = centerGX - 1; gx <= centerGX + 1; gx++) {
+      for (let gz = centerGZ - 1; gz <= centerGZ + 1; gz++) {
+        const key = botNavigationKey(gx, gz);
+        if (!blockers.has(key)) blockers.set(key, []);
+        blockers.get(key).push(block);
+      }
+    }
+  }
+  botNavigationSurfaceCache = nodes;
+  botNavigationBlockerCache = blockers;
+  botNavigationCacheRevision = botNavigationRevision;
+  return nodes;
+}
+
+function isBotNavigationBlocked(node) {
+  for (const block of botNavigationBlockerCache.get(botNavigationKey(node.gx, node.gz)) || []) {
+    const top = block.position.y + 0.25;
+    const bottom = block.position.y - 0.25;
+    if (node.y < bottom + 0.05 && node.y + 1.8 > bottom + 0.05 &&
+        Math.abs(node.x - block.position.x) < 0.55 &&
+        Math.abs(node.z - block.position.z) < 0.55 && node.y < top - 0.05) return true;
+  }
+  return false;
+}
+
+function botRouteHeapPush(heap, entry) {
+  heap.push(entry);
+  let index = heap.length - 1;
+  while (index > 0) {
+    const parent = Math.floor((index - 1) / 2);
+    if (heap[parent].score <= entry.score) break;
+    heap[index] = heap[parent];
+    index = parent;
+  }
+  heap[index] = entry;
+}
+
+function botRouteHeapPop(heap) {
+  const first = heap[0];
+  const last = heap.pop();
+  if (heap.length && last) {
+    let index = 0;
+    while (true) {
+      const left = index * 2 + 1;
+      const right = left + 1;
+      if (left >= heap.length) break;
+      const child = right < heap.length && heap[right].score < heap[left].score ? right : left;
+      if (heap[child].score >= last.score) break;
+      heap[index] = heap[child];
+      index = child;
+    }
+    heap[index] = last;
+  }
+  return first;
+}
+
+function nearestBotNavigationNode(nodes, x, z, feet, radius) {
+  const centerGX = Math.round((x - 0.25) * 2);
+  const centerGZ = Math.round((z - 0.25) * 2);
+  const radiusCells = Math.ceil(radius * 2);
+  let closest = null;
+  let closestScore = Infinity;
+  for (let gx = centerGX - radiusCells; gx <= centerGX + radiusCells; gx++) {
+    for (let gz = centerGZ - radiusCells; gz <= centerGZ + radiusCells; gz++) {
+      const node = nodes.get(botNavigationKey(gx, gz));
+      if (!node || Math.abs(node.y - feet) > 0.85 || isBotNavigationBlocked(node)) continue;
+      const distance = Math.hypot(node.x - x, node.z - z);
+      if (distance > radius) continue;
+      const score = distance + Math.abs(node.y - feet) * 1.5;
+      if (score < closestScore) {
+        closest = node;
+        closestScore = score;
+      }
+    }
+  }
+  return closest;
+}
+
+function botRouteHeuristic(gx, gz, goalGX, goalGZ) {
+  const dx = Math.abs(goalGX - gx);
+  const dz = Math.abs(goalGZ - gz);
+  return 0.5 * (Math.max(dx, dz) + (Math.SQRT2 - 1) * Math.min(dx, dz));
+}
+
+function findBotRoute(bot, target) {
+  const targetX = target.group?.position.x ?? target.mesh?.position.x ?? target.x;
+  const targetZ = target.group?.position.z ?? target.mesh?.position.z ?? target.z;
+  if (!Number.isFinite(targetX) || !Number.isFinite(targetZ)) return null;
+  const nodes = botNavigationNodeMap();
+  const start = nearestBotNavigationNode(nodes, bot.group.position.x, bot.group.position.z, bot.group.position.y, 1.25);
+  const targetFeet = target.kind === 'player'
+    ? target.group.position.y - 1.65
+    : target.group?.position.y ?? target.mesh?.position.y ?? bot.group.position.y;
+  const goal = nearestBotNavigationNode(nodes, targetX, targetZ, targetFeet, 2.2);
+  if (!start || !goal) return null;
+
+  const margin = 14;
+  const minGX = Math.max(-145, Math.min(start.gx, goal.gx) - margin);
+  const maxGX = Math.min(145, Math.max(start.gx, goal.gx) + margin);
+  const minGZ = Math.max(-145, Math.min(start.gz, goal.gz) - margin);
+  const maxGZ = Math.min(145, Math.max(start.gz, goal.gz) + margin);
+  const directions = [
+    [1, 0], [-1, 0], [0, 1], [0, -1],
+    [1, 1], [1, -1], [-1, 1], [-1, -1],
+  ];
+  const startKey = `${start.gx},${start.gz},0,0,0`;
+  const open = [];
+  const bestCost = new Map([[startKey, 0]]);
+  const parents = new Map();
+  const states = new Map([[startKey, { ...start, gap: 0, bridgeY: 0, bridgeCount: 0, key: startKey }]]);
+  botRouteHeapPush(open, { key: startKey, score: botRouteHeuristic(start.gx, start.gz, goal.gx, goal.gz) });
+  let foundKey = null;
+  let expanded = 0;
+
+  while (open.length && expanded < 18000) {
+    const entry = botRouteHeapPop(open);
+    const current = states.get(entry.key);
+    if (!current || entry.score > bestCost.get(entry.key) + botRouteHeuristic(current.gx, current.gz, goal.gx, goal.gz) + 0.001) continue;
+    expanded++;
+    if (current.gx === goal.gx && current.gz === goal.gz) {
+      foundKey = current.key;
+      break;
+    }
+
+    for (const [stepX, stepZ] of directions) {
+      const gx = current.gx + stepX;
+      const gz = current.gz + stepZ;
+      if (gx < minGX || gx > maxGX || gz < minGZ || gz > maxGZ) continue;
+      const neighbor = nodes.get(botNavigationKey(gx, gz));
+      if (neighbor && isBotNavigationBlocked(neighbor)) continue;
+      if (Math.abs(stepX) + Math.abs(stepZ) === 2 && neighbor) {
+        const horizontal = nodes.get(botNavigationKey(current.gx + stepX, current.gz));
+        const vertical = nodes.get(botNavigationKey(current.gx, current.gz + stepZ));
+        const horizontalOpen = horizontal && Math.abs(horizontal.y - current.y) <= 0.72 &&
+          !isBotNavigationBlocked(horizontal);
+        const verticalOpen = vertical && Math.abs(vertical.y - current.y) <= 0.72 &&
+          !isBotNavigationBlocked(vertical);
+        if (!horizontalOpen && !verticalOpen) continue;
+      }
+
+      let gap = current.gap;
+      let bridgeY = current.bridgeY;
+      let bridgeCount = current.bridgeCount;
+      if (neighbor) {
+        const referenceY = current.gap > 0 ? current.bridgeY : current.y;
+        if (Math.abs(neighbor.y - referenceY) > (current.gap > 0 ? 1.2 : 0.72)) continue;
+        gap = 0;
+        bridgeY = 0;
+      } else {
+        if (current.gap === 0) bridgeY = current.y;
+        gap += 1;
+        if (gap > Math.max(3, bot.blocks + 3)) continue;
+        if (gap === 4) bridgeCount += 4;
+        else if (gap > 4) bridgeCount++;
+        if (bridgeCount > bot.blocks) continue;
+      }
+
+      const key = `${gx},${gz},${gap},${Math.round(bridgeY * 4)},${bridgeCount}`;
+      const distance = Math.hypot(stepX, stepZ) * 0.5;
+      const stepCost = distance * (neighbor ? 1 + Math.abs((neighbor.y ?? current.y) - current.y) * 1.2 : 3.4);
+      const nextCost = bestCost.get(current.key) + stepCost;
+      if (nextCost >= (bestCost.get(key) ?? Infinity)) continue;
+      bestCost.set(key, nextCost);
+      const next = { gx, gz, x: 0.25 + gx * 0.5, z: 0.25 + gz * 0.5,
+        y: neighbor?.y ?? current.y, gap, bridgeY, bridgeCount, key };
+      states.set(key, next);
+      parents.set(key, current.key);
+      botRouteHeapPush(open, { key, score: nextCost + botRouteHeuristic(gx, gz, goal.gx, goal.gz) });
+    }
+  }
+
+  if (!foundKey) return null;
+  const path = [];
+  for (let key = foundKey; key && key !== startKey; key = parents.get(key)) {
+    const node = states.get(key);
+    if (node) path.push({ x: node.x, z: node.z, y: node.y, bridge: node.gap > 0 });
+  }
+  path.reverse();
+  return { waypoints: path, targetX, targetZ, revision: botNavigationRevision };
+}
+
+function updateBotRoute(bot, target, now) {
+  const targetX = target.group?.position.x ?? target.mesh?.position.x ?? target.x;
+  const targetZ = target.group?.position.z ?? target.mesh?.position.z ?? target.z;
+  if (!Number.isFinite(targetX) || !Number.isFinite(targetZ)) return null;
+  const currentWaypoint = bot.route?.waypoints[bot.routeIndex];
+  if (currentWaypoint && Math.hypot(currentWaypoint.x - bot.group.position.x,
+    currentWaypoint.z - bot.group.position.z) < 0.34) {
+    bot.routeIndex++;
+    bot.routeLastProgressAt = now;
+  }
+  const nextWaypoint = bot.route?.waypoints[bot.routeIndex];
+  const distance = nextWaypoint
+    ? Math.hypot(nextWaypoint.x - bot.group.position.x, nextWaypoint.z - bot.group.position.z)
+    : Infinity;
+  if (Number.isFinite(bot.routeLastDistance) && distance < bot.routeLastDistance - 0.08) {
+    bot.routeLastProgressAt = now;
+  }
+  const stalled = nextWaypoint && now - bot.routeLastProgressAt > 1.6;
+  const targetMoved = Math.hypot(targetX - bot.routeTargetX, targetZ - bot.routeTargetZ) > 1.2;
+  const needsRoute = !bot.route || bot.routeRevision !== botNavigationRevision ||
+    bot.routeObjectiveKey !== bot.objectiveKey || now >= bot.routeNextPlanAt || targetMoved || stalled;
+  if (needsRoute) {
+    bot.route = findBotRoute(bot, target);
+    bot.routeIndex = 0;
+    bot.routeRevision = botNavigationRevision;
+    bot.routeNextPlanAt = now + (bot.route ? 0.85 : 0.35);
+    bot.routeTargetX = targetX;
+    bot.routeTargetZ = targetZ;
+    bot.routeObjectiveKey = bot.objectiveKey;
+    bot.routeLastProgressAt = now;
+    bot.routeLastDistance = Infinity;
+  }
+  const waypoint = bot.route?.waypoints[bot.routeIndex] ?? null;
+  bot.routeLastDistance = waypoint
+    ? Math.hypot(waypoint.x - bot.group.position.x, waypoint.z - bot.group.position.z)
+    : Infinity;
+  return waypoint;
+}
+
 function purchaseBotGear(bot, now) {
   if (now < bot.nextPurchaseAt) return;
   bot.nextPurchaseAt = now + 3;
   const inCombat = bot.objectiveType === 'defend' || bot.objectiveType === 'engage';
   const options = [];
-  if (bot.iron >= 4 && bot.blocks <= 32) {
-    options.push({ kind: 'blocks', score: 0.7 + (32 - bot.blocks) / 32 * 1.7 + (bot.objectiveType === 'raid' ? 0.3 : 0) });
+  const desiredBlockStock = bot.objectiveType === 'raid' ? 80 : 72;
+  if (bot.iron >= 4 && bot.blocks < desiredBlockStock) {
+    options.push({ kind: 'blocks', score: 1.1 + (desiredBlockStock - bot.blocks) / 32 * 1.2 +
+      (bot.objectiveType === 'raid' ? 0.35 : 0) });
   }
   if (bot.weapon < 22 && bot.iron >= 12) {
     options.push({ kind: 'ironWeapon', score: 1.1 + bot.aggression * 0.65 + (inCombat ? 0.7 : 0) });
@@ -1430,6 +1713,9 @@ function purchaseBotGear(bot, now) {
   }
   if (bot.armor === 0 && bot.gold >= 8) {
     options.push({ kind: 'armor', score: 1.2 + bot.caution * 0.8 + (inCombat ? 0.5 : 0) });
+  }
+  if (bot.apples < 1 && bot.health < 70 && bot.gold >= 4) {
+    options.push({ kind: 'apple', score: 2.4 + (70 - bot.health) / 70 * 1.5 + bot.caution * 0.35 });
   }
   options.sort((a, b) => b.score - a.score);
   const choice = options[0]?.kind;
@@ -1445,6 +1731,9 @@ function purchaseBotGear(bot, now) {
   } else if (choice === 'armor') {
     bot.gold -= 8;
     bot.armor = 0.3;
+  } else if (choice === 'apple') {
+    bot.gold -= 4;
+    bot.apples++;
   }
 }
 
@@ -1460,8 +1749,9 @@ function botHasJumpLanding(bot, directionX, directionZ) {
 
 function botBuildAhead(bot, directionX, directionZ, skipForJump = false) {
   const pos = bot.group.position;
-  const probeX = pos.x + directionX * 0.38;
-  const probeZ = pos.z + directionZ * 0.38;
+  const probeDistance = Math.abs(directionX) > 0.5 && Math.abs(directionZ) > 0.5 ? 0.34 : 0.38;
+  const probeX = pos.x + directionX * probeDistance;
+  const probeZ = pos.z + directionZ * probeDistance;
   if (skipForJump) return false;
   const currentSupport = supportAt(pos.x, pos.z, pos.y + 0.22);
   if (supportAt(probeX, probeZ, pos.y + 0.22) > -Infinity ||
@@ -1497,7 +1787,61 @@ function botTakeHit(bot, target, now) {
   if (target.health === 0) knockOutBot(target, now);
 }
 
+function estimateBotCombatRisk(bot, enemies, allies) {
+  let incomingPressure = 0;
+  let alliedPressure = 0;
+  let nearbyEnemies = 0;
+  let nearbyAllies = 0;
+  const addPressure = (entity, isEnemy) => {
+    const distance = Math.hypot(entity.group.position.x - bot.group.position.x,
+      entity.group.position.z - bot.group.position.z);
+    if (distance > 12) return;
+    const weapon = entity.kind === 'player' ? state.player.weapon : entity.weapon;
+    const armorMitigation = isEnemy ? 1 - (bot.armor || 0) : 1;
+    const damagePerSecond = Math.max(6, weapon || 10) * armorMitigation / 1.05;
+    const proximity = Math.max(0, Math.min(1, (12 - distance) / 8));
+    if (isEnemy) {
+      incomingPressure += damagePerSecond * proximity;
+      if (distance < 6) nearbyEnemies++;
+    } else {
+      alliedPressure += damagePerSecond * proximity;
+      if (distance < 6) nearbyAllies++;
+    }
+  };
+  for (const enemy of enemies) addPressure(enemy, true);
+  for (const ally of allies) addPressure(ally, false);
+  if (bot.team.id === localTeamId && state.alive) {
+    addPressure({ kind: 'player', group: { position: camera.position } }, false);
+  }
+  return {
+    incomingPressure,
+    alliedPressure,
+    nearbyEnemies,
+    nearbyAllies,
+    outnumbered: nearbyEnemies > nearbyAllies + 1 || incomingPressure > alliedPressure * 1.35,
+  };
+}
+
+function findBotRetreatWaypoint(bot, enemies) {
+  const options = [];
+  for (let step = 0; step < 8; step++) {
+    const angle = (Math.PI * 2 * step) / 8;
+    const x = bot.team.x + Math.cos(angle) * 7;
+    const z = bot.team.z + Math.sin(angle) * 7;
+    const support = supportAt(x, z, bot.group.position.y + 0.22);
+    if (support === -Infinity || isBlocked(x, z, support)) continue;
+    const nearestEnemy = enemies.reduce((nearest, enemy) => Math.min(nearest,
+      Math.hypot(enemy.group.position.x - x, enemy.group.position.z - z)), Infinity);
+    options.push({ kind: 'waypoint', team: bot.team, x, z, y: support,
+      score: nearestEnemy - Math.hypot(x - bot.team.pig.x, z - bot.team.pig.z) * 0.12 });
+  }
+  options.sort((a, b) => b.score - a.score);
+  return options[0] ?? null;
+}
+
 function botObjectiveKey(type, target) {
+  if (type === 'retreat') return `retreat:${target.team.id}`;
+  if (type === 'home') return `home:${target.team.id}`;
   if (type === 'raid') return `pig:${target.team.id}`;
   if (type === 'resupply') return `pickup:${target.mesh.uuid}`;
   if (target.kind === 'player') return 'player';
@@ -1507,6 +1851,8 @@ function botObjectiveKey(type, target) {
 function botObjectiveIsValid(bot) {
   const target = bot.objectiveTarget;
   if (!target) return false;
+  if (bot.objectiveType === 'retreat') return target.team.id === bot.team.id && bot.health < 55;
+  if (bot.objectiveType === 'home') return target.team.id === bot.team.id && bot.team.active;
   if (bot.objectiveType === 'raid') return target.alive && target.team.id !== bot.team.id;
   if (bot.objectiveType === 'resupply') return pickups.includes(target) && target.teamId === bot.team.id;
   if (bot.objectiveType === 'defend' || bot.objectiveType === 'engage') {
@@ -1519,12 +1865,25 @@ function chooseBotObjective(bot, enemies, now) {
   if (now < bot.nextObjectiveAt && botObjectiveIsValid(bot)) return;
   const pos = bot.group.position;
   const options = [];
+  const allies = entities.filter((ally) => ally !== bot && ally.active && ally.alive && ally.team.id === bot.team.id);
+  const risk = estimateBotCombatRisk(bot, enemies, allies);
   const consider = (type, target, score) => {
     if (!target || !Number.isFinite(score)) return;
     const key = botObjectiveKey(type, target);
     if (key === bot.objectiveKey) score += 0.28;
     options.push({ type, target, key, score: score + Math.random() * 0.035 });
   };
+
+  const homeThreat = enemies.some((enemy) =>
+    Math.hypot(enemy.group.position.x - bot.team.pig.x, enemy.group.position.z - bot.team.pig.z) < 14);
+  if (bot.health < 55 && enemies.length && risk.outnumbered && !homeThreat) {
+    const retreat = findBotRetreatWaypoint(bot, enemies);
+    if (retreat) {
+      const healthNeed = (55 - bot.health) / 55;
+      const pressureNeed = risk.incomingPressure / Math.max(1, risk.alliedPressure + 1);
+      consider('retreat', retreat, 2.2 + healthNeed * 2.2 + Math.min(1.4, pressureNeed));
+    }
+  }
 
   for (const enemy of enemies) {
     const enemyPos = enemy.group.position;
@@ -1533,12 +1892,19 @@ function chooseBotObjective(bot, enemies, now) {
     if (homeDistance < 14) {
       const homePressure = (14 - homeDistance) / 14;
       const damagedPig = 1 - bot.team.pig.health / bot.team.pig.maxHealth;
-      consider('defend', enemy, 2.0 + homePressure * 1.7 + damagedPig * 0.45 + bot.caution * 0.3 - distance * 0.055);
+      const allyAlreadyDefending = allies.filter((ally) => ally.objectiveType === 'defend' &&
+        ally.objectiveKey === botObjectiveKey('defend', enemy)).length;
+      consider('defend', enemy, 2.0 + homePressure * 1.7 + damagedPig * 0.45 + bot.caution * 0.3 -
+        distance * 0.055 - allyAlreadyDefending * 0.65);
     }
-    consider('engage', enemy, 1.05 + bot.aggression * 0.75 + Math.max(0, 10 - distance) * 0.12 - distance * 0.035);
+    const allyAlreadyEngaging = allies.filter((ally) => ally.objectiveType === 'engage' &&
+      ally.objectiveKey === botObjectiveKey('engage', enemy)).length;
+    const riskPenalty = risk.outnumbered && bot.health < 70 ? 0.95 : 0;
+    const targetValue = 0.12 * (1 - (enemy.health || 100) / 100);
+    consider('engage', enemy, 1.05 + bot.aggression * 0.75 + Math.max(0, 10 - distance) * 0.12 -
+      distance * 0.035 + targetValue - riskPenalty - allyAlreadyEngaging * 0.4);
   }
 
-  const allies = entities.filter((ally) => ally !== bot && ally.active && ally.alive && ally.team.id === bot.team.id);
   for (const pig of pigs) {
     if (!pig.alive || pig.team.id === bot.team.id || !pig.team.active) continue;
     const distance = Math.hypot(pig.x - pos.x, pig.z - pos.z);
@@ -1592,37 +1958,76 @@ function moveBots(delta, now) {
     }
     chooseBotObjective(bot, enemies, now);
     purchaseBotGear(bot, now);
-    const hostile = bot.objectiveType === 'defend' || bot.objectiveType === 'engage'
+    if (bot.objectiveType === 'retreat' && bot.health <= 60 && bot.apples > 0 && now >= bot.nextHealAt) {
+      bot.apples--;
+      bot.health = Math.min(bot.maxHealth, bot.health + 40);
+      bot.nextHealAt = now + 3;
+    }
+    let hostile = bot.objectiveType === 'defend' || bot.objectiveType === 'engage'
       ? bot.objectiveTarget : null;
-    const hostileDistance = hostile
+    let hostileDistance = hostile
       ? Math.hypot(hostile.group.position.x - pos.x, hostile.group.position.z - pos.z)
       : Infinity;
-    const combatTarget = hostile;
-    const goalPig = bot.objectiveType === 'raid' ? bot.objectiveTarget : null;
-    const goalPickup = bot.objectiveType === 'resupply' ? bot.objectiveTarget : null;
-    const goalX = combatTarget?.group.position.x ?? goalPig?.x ?? goalPickup?.mesh.position.x ?? team.x;
-    const goalZ = combatTarget?.group.position.z ?? goalPig?.z ?? goalPickup?.mesh.position.z ?? team.z;
+    let combatTarget = hostile;
+    let goalPig = bot.objectiveType === 'raid' ? bot.objectiveTarget : null;
+    let goalPickup = bot.objectiveType === 'resupply' ? bot.objectiveTarget : null;
+    let goalWaypoint = bot.objectiveType === 'retreat' ? bot.objectiveTarget : null;
+    let goalTarget = combatTarget || goalPig || goalPickup || goalWaypoint || team.pig;
+    let targetX = combatTarget?.group.position.x ?? goalPig?.x ?? goalPickup?.mesh.position.x ?? goalWaypoint?.x ?? team.x;
+    let targetZ = combatTarget?.group.position.z ?? goalPig?.z ?? goalPickup?.mesh.position.z ?? goalWaypoint?.z ?? team.z;
+    let directTargetDistance = Math.hypot(targetX - pos.x, targetZ - pos.z);
+    let interactionRange = combatTarget ? 3.4 : goalPig ? 2.8 : goalPickup ? 1.45 : 1.1;
+    let routeWaypoint = directTargetDistance > interactionRange ? updateBotRoute(bot, goalTarget, now) : null;
+    if (!routeWaypoint && directTargetDistance > interactionRange) {
+      if (bot.objectiveType !== 'home') {
+        bot.objectiveType = 'home';
+        bot.objectiveTarget = team.pig;
+        bot.objectiveKey = `home:${team.id}`;
+        bot.nextObjectiveAt = now + 0.8;
+        bot.route = null;
+        combatTarget = null;
+        hostile = null;
+        hostileDistance = Infinity;
+        goalPig = null;
+        goalPickup = null;
+        goalWaypoint = null;
+        goalTarget = team.pig;
+        targetX = team.pig.x;
+        targetZ = team.pig.z;
+        directTargetDistance = Math.hypot(targetX - pos.x, targetZ - pos.z);
+        interactionRange = 1.1;
+        routeWaypoint = directTargetDistance > interactionRange ? updateBotRoute(bot, team.pig, now) : null;
+      }
+    }
+    const routeUnavailable = !routeWaypoint && directTargetDistance > interactionRange;
+    const goalX = routeWaypoint?.x ?? targetX;
+    const goalZ = routeWaypoint?.z ?? targetZ;
     const targetDistance = Math.hypot(goalX - pos.x, goalZ - pos.z);
     const attackRange = combatTarget ? 3.4 : 2.8;
-    if ((combatTarget && hostileDistance <= 3.4) && targetDistance <= attackRange) {
+    if ((combatTarget && hostileDistance <= 3.4) && directTargetDistance <= attackRange) {
       bot.group.lookAt(goalX, 1, goalZ);
       if (now >= bot.attackAt) botTakeHit(bot, combatTarget, now);
-    } else if (goalPig && targetDistance <= 3.4) {
+    } else if (goalPig && directTargetDistance <= 3.4) {
       bot.group.lookAt(goalX, 1, goalZ);
       if (now >= bot.attackAt) botTakeHit(bot, goalPig, now);
-    } else if (goalPickup && targetDistance <= 1.45) {
+    } else if (goalPickup && directTargetDistance <= 1.45) {
+      bot.velocityX = 0;
+      bot.velocityZ = 0;
+    } else if (goalWaypoint && directTargetDistance <= 1.1) {
+      bot.velocityX = 0;
+      bot.velocityZ = 0;
+    } else if (routeUnavailable) {
       bot.velocityX = 0;
       bot.velocityZ = 0;
     } else {
       const dx = goalX - pos.x;
       const dz = goalZ - pos.z;
       const distance = Math.hypot(dx, dz) || 1;
-      let directionX = dx / distance;
-      let directionZ = dz / distance;
-      if (Math.abs(dx) >= Math.abs(dz)) directionZ = 0;
-      else directionX = 0;
+      const directionX = dx / distance;
+      const directionZ = dz / distance;
       bot.group.lookAt(pos.x + directionX, 1, pos.z + directionZ);
-      const probeUnsupported = supportAt(pos.x + directionX * 0.38, pos.z + directionZ * 0.38, pos.y + 0.22) === -Infinity;
+      const probeDistance = Math.abs(directionX) > 0.5 && Math.abs(directionZ) > 0.5 ? 0.34 : 0.38;
+      const probeUnsupported = supportAt(pos.x + directionX * probeDistance, pos.z + directionZ * probeDistance, pos.y + 0.22) === -Infinity;
       const jumpingGap = bot.onGround && probeUnsupported && botHasJumpLanding(bot, directionX, directionZ);
       const placedBridgeBlock = botBuildAhead(bot, directionX, directionZ, jumpingGap);
 
