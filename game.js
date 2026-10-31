@@ -245,7 +245,7 @@ function createIsland(x, z, team) {
   islandGroup.position.set(x, 0, z);
   scene.add(islandGroup);
   if (team) team.islandGroup = islandGroup;
-  const base = makeMesh(new THREE.BoxGeometry(24, 2, 24), materials.terrainSoil, islandGroup, 0, -1, 0);
+  const base = makeMesh(new THREE.BoxGeometry(24, 1.88, 24), materials.terrainSoil, islandGroup, 0, -1.06, 0);
   base.receiveShadow = true;
   const top = makeMesh(new THREE.BoxGeometry(24, 0.24, 24), materials.terrainGrass, islandGroup, 0, -0.12, 0);
   addWorldSurface(x, z, 24, 24, 0, top);
@@ -349,8 +349,11 @@ function createBot(team, slot = 0) {
   scene.add(group);
   const bot = {
     team, slot, active: false, group, health: 100, maxHealth: 100, alive: true, respawnAt: 0, attackAt: 0, hitAt: 0,
-    targetPig: null, nextTargetAt: 0, routeTargetPig: null, routeThroughCenter: false,
-    combatTarget: null, nextCombatDecisionAt: 0,
+    objectiveType: null, objectiveTarget: null, objectiveKey: null, nextObjectiveAt: 0,
+    aggression: 0.85 + Math.random() * 0.3,
+    caution: 0.85 + Math.random() * 0.3,
+    resourcefulness: 0.85 + Math.random() * 0.3,
+    combatTarget: null,
     iron: 1, gold: 0, emerald: 0, blocks: 48,
     weapon: 10, armor: 0, velocityY: 0, velocityX: 0, velocityZ: 0, onGround: true, jumpCooldown: 0,
     lastIronGen: 0, lastGoldGen: 0, nextPurchaseAt: 0, blockMaterial: new THREE.MeshLambertMaterial({ color: team.color, flatShading: true }),
@@ -379,11 +382,10 @@ function configureMatchMode(mode, onlineTeams = null) {
       bot.respawnAt = 0;
       bot.attackAt = 0;
       bot.combatTarget = null;
-      bot.nextCombatDecisionAt = 0;
-      bot.targetPig = null;
-      bot.routeTargetPig = null;
-      bot.routeThroughCenter = false;
-      bot.prepareUntil = 0;
+      bot.objectiveType = null;
+      bot.objectiveTarget = null;
+      bot.objectiveKey = null;
+      bot.nextObjectiveAt = 0;
       bot.group.visible = bot.active;
       const spawn = botHomePosition(team, bot.slot);
       bot.group.position.set(spawn.x, 0, spawn.z);
@@ -454,8 +456,26 @@ function applyNetworkBlock(block) {
   networkBlockKeys.add(key);
 }
 
+function reconcileNetworkPickups(networkPickups = []) {
+  const incomingIds = new Set();
+  for (const pickup of networkPickups) {
+    incomingIds.add(pickup.id);
+    if (pickups.some((entry) => entry.id === pickup.id)) continue;
+    const colors = { iron: '#d9e1ef', gold: '#ffd04c', emerald: '#55f0a2' };
+    const { x, y, z } = pickup.position;
+    spawnPickup(pickup.resource, x, z, pickup.amount, colors[pickup.resource] || '#ffffff', y, pickup.teamId, pickup.id);
+  }
+  for (let index = pickups.length - 1; index >= 0; index--) {
+    const pickup = pickups[index];
+    if (!pickup.serverManaged || incomingIds.has(pickup.id)) continue;
+    scene.remove(pickup.mesh);
+    pickups.splice(index, 1);
+  }
+}
+
 function applyNetworkState(networkState) {
   for (const block of networkState.blocks || []) applyNetworkBlock(block);
+  reconcileNetworkPickups(networkState.pickups || []);
   const playersByTeam = new Map();
   const connectedPlayers = (networkState.players || []).filter((player) => player.connected).length;
   for (const player of networkState.players || []) {
@@ -472,6 +492,13 @@ function applyNetworkState(networkState) {
       const wasAlive = state.alive;
       state.alive = player.alive;
       state.health = player.health;
+      let inventoryChanged = false;
+      if (player.inventory) {
+        for (const [key, value] of Object.entries(player.inventory)) {
+          if (state.player[key] !== value) inventoryChanged = true;
+          state.player[key] = value;
+        }
+      }
       if (wasAlive && !player.alive) showToast('Knocked out! Respawning at your pig.');
       if (!wasAlive && player.alive) {
         camera.position.set(player.x, player.y, player.z);
@@ -482,6 +509,11 @@ function applyNetworkState(networkState) {
       }
       $('#health-text').textContent = String(player.health);
       $('#health-fill').style.width = `${player.health}%`;
+      updateResources();
+      if (inventoryChanged) {
+        updateHotbar();
+        if (!shopPanel.classList.contains('hidden')) openShop();
+      }
     } else {
       let remote = remotePlayers.get(player.id);
       if (!remote) remote = createRemotePlayer(player);
@@ -498,13 +530,14 @@ function applyNetworkState(networkState) {
   for (const pigStatus of networkState.pigs || []) {
     const team = teams.find((entry) => entry.id === pigStatus.teamId);
     if (!team?.pig) continue;
+    const pigWasAlive = team.pig.alive;
     team.pig.health = pigStatus.health;
     team.pig.alive = pigStatus.alive;
-    if (team.pig.alive) {
+    if (team.pig.alive && !pigWasAlive) {
       team.pig.group.traverse((object) => {
         if (object.isMesh && object.userData.originalMaterial) object.material = object.userData.originalMaterial;
       });
-    } else {
+    } else if (!team.pig.alive && pigWasAlive) {
       team.pig.group.traverse((object) => {
         if (object.isMesh) object.material = new THREE.MeshLambertMaterial({ color: '#594e65', flatShading: true });
       });
@@ -517,7 +550,7 @@ function applyNetworkState(networkState) {
   $('#network-indicator').textContent = `ONLINE · ${connectedPlayers}`;
   renderTeamStatus();
   if (networkState.winner && state.mode === 'playing') {
-    endGame(networkState.winner === localTeamId);
+    endGame(networkState.winner === localTeamId, networkState.winner === 'draw');
   }
 }
 
@@ -550,6 +583,8 @@ function beginOnlineMatch(message) {
   state.lastIronGen = performance.now() / 1000;
   state.lastGoldGen = state.lastIronGen;
   state.lastCentralGen = state.lastIronGen;
+  for (const pickup of pickups) scene.remove(pickup.mesh);
+  pickups.length = 0;
   $('.match-picker').classList.add('hidden');
   queueStatusPanel.classList.add('hidden');
   overlay.classList.add('hidden');
@@ -592,6 +627,22 @@ function handleMultiplayerMessage(message) {
     }
   } else if (message.type === 'block_placed') {
     applyNetworkBlock(message.block);
+  } else if (message.type === 'action_rejected') {
+    const messages = {
+      already_owned: 'You already own that upgrade.',
+      already_full_health: 'You are already at full health.',
+      cooldown: 'Wait before using another item.',
+      insufficient_resources: 'Not enough resources.',
+      invalid_item: 'That item is unavailable.',
+      invalid_target: 'That target is unavailable.',
+      invalid_position: 'That block placement is invalid.',
+      not_alive: 'You cannot do that while knocked out.',
+      out_of_range: 'Move closer to your team shop.',
+      room_finished: 'This match has ended.',
+      unavailable: 'You do not have that item.',
+      unsupported_action: 'That item is disabled in online matches for now.',
+    };
+    showToast(messages[message.reason] || 'The server rejected that action.');
   } else if (message.type === 'error') {
     multiplayerStatus.textContent = message.message;
     queueStatusCopy.textContent = message.message;
@@ -738,7 +789,7 @@ function findOnlineMatch() {
 
 function createWorld() {
   for (const team of teams) createIsland(team.x, team.z, team);
-  makeMesh(new THREE.BoxGeometry(26, 3, 26), materials.stone, scene, 0, -1.5, 0);
+  makeMesh(new THREE.BoxGeometry(26, 2.88, 26), materials.stone, scene, 0, -1.56, 0);
   const centerTop = makeMesh(new THREE.BoxGeometry(26, 0.22, 26), materials.terrainGrass, scene, 0, -0.11, 0);
   addWorldSurface(0, 0, 26, 26, 0, centerTop);
   const centerGen = new THREE.Group();
@@ -798,11 +849,14 @@ function createDecorations() {
   }
 }
 
-function spawnPickup(resource, x, z, amount, color, y = 0.55, teamId = null) {
+function spawnPickup(resource, x, z, amount, color, y = 0.55, teamId = null, id = null) {
   const geometry = resource === 'emerald' ? new THREE.OctahedronGeometry(0.38, 0) : new THREE.BoxGeometry(0.48, 0.48, 0.48);
   const material = new THREE.MeshLambertMaterial({ color, flatShading: true, emissive: color, emissiveIntensity: 0.12 });
-  const mesh = makeMesh(geometry, material, scene, x + (Math.random() - 0.5) * 1.2, y, z + (Math.random() - 0.5) * 1.2);
-  pickups.push({ mesh, resource, amount, teamId, startY: y, phase: Math.random() * 10, createdAt: performance.now() / 1000 });
+  const offset = id ? 0 : 1.2;
+  const mesh = makeMesh(geometry, material, scene,
+    x + (Math.random() - 0.5) * offset, y, z + (Math.random() - 0.5) * offset);
+  pickups.push({ mesh, resource, amount, teamId, id, serverManaged: Boolean(id), startY: y,
+    phase: Math.random() * 10, createdAt: performance.now() / 1000 });
 }
 
 function updatePickups(time, delta) {
@@ -810,7 +864,7 @@ function updatePickups(time, delta) {
     const pickup = pickups[i];
     pickup.mesh.rotation.y += delta * 1.6;
     pickup.mesh.position.y = pickup.startY + Math.sin(time * 2.8 + pickup.phase) * 0.12;
-    if (pickup.mesh.position.distanceTo(camera.position) < 1.8) {
+    if (!pickup.serverManaged && !onlineMatch && pickup.mesh.position.distanceTo(camera.position) < 1.8) {
       state.player[pickup.resource] += pickup.amount;
       updateResources();
       showToast(`+${pickup.amount} ${capitalize(pickup.resource)}`);
@@ -818,7 +872,7 @@ function updatePickups(time, delta) {
       pickups.splice(i, 1);
       continue;
     }
-    const collector = entities.find((bot) => bot.active && bot.alive && pickup.teamId === bot.team.id &&
+    const collector = !onlineMatch && entities.find((bot) => bot.active && bot.alive && pickup.teamId === bot.team.id &&
       pickup.mesh.position.distanceTo(bot.group.position) < 1.7);
     if (collector) {
       collector[pickup.resource] += pickup.amount;
@@ -826,7 +880,7 @@ function updatePickups(time, delta) {
       pickups.splice(i, 1);
       continue;
     }
-    if (time - pickup.createdAt > 75) {
+    if (!pickup.serverManaged && time - pickup.createdAt > 75) {
       scene.remove(pickup.mesh);
       pickups.splice(i, 1);
     }
@@ -975,15 +1029,14 @@ function buildAtAim() {
     return showToast('Aim at a surface within 7 blocks.');
   }
   if (!placement.valid) return showToast('That space is occupied or too close.');
-  makeBlock(placement.x, placement.y, placement.z, materials.wool, true);
   if (onlineMatch) {
-    const key = `${placement.x},${placement.y},${placement.z}`;
-    networkBlockKeys.add(key);
     sendMultiplayerMessage({
       type: 'block',
       position: { x: placement.x, y: placement.y, z: placement.z },
     });
+    return;
   }
+  makeBlock(placement.x, placement.y, placement.z, materials.wool, true);
   state.player.blocks--;
   updateHotbar();
 }
@@ -1007,10 +1060,7 @@ function getCombatTargets() {
 
 function shootArrow() {
   if (onlineMatch) {
-    const target = getAimTarget();
-    if (!target || target.team?.id === localTeamId) return;
-    sendMultiplayerAttack(target);
-    return;
+    return showToast('Bows are disabled in online matches for now.');
   }
   if (!state.player.hasBow) return showToast('Buy a bow from the shop first.');
   if (state.player.arrows < 1) return showToast('You are out of arrows.');
@@ -1214,12 +1264,20 @@ function checkEndState() {
   if (remaining.length === 1 && remaining[0] === userTeam) endGame(true);
 }
 
-function endGame(won) {
+function endGame(won, draw = false) {
+  if (onlineMatch) {
+    onlineMatch = false;
+    onlineRoomId = null;
+    const socket = multiplayerSocket;
+    multiplayerSocket = null;
+    socket?.close();
+  }
   state.mode = won ? 'won' : 'lost';
   document.exitPointerLock?.();
   shopPanel.classList.add('hidden');
-  overlayTitle.textContent = won ? 'VICTORY!' : 'PIG DOWN';
-  overlayCopy.textContent = won ? 'All rival teams are out. The void is yours.' : 'Your pig is gone, and your last life was spent.';
+  overlayTitle.textContent = draw ? 'MATCH DRAW' : won ? 'VICTORY!' : 'PIG DOWN';
+  overlayCopy.textContent = draw ? 'Every team was eliminated at the same time.'
+    : won ? 'All rival teams are out. The void is yours.' : 'Your pig is gone, and your last life was spent.';
   startButton.textContent = 'PLAY AGAIN';
   $('.online-controls').classList.add('hidden');
   updateTouchControlsVisibility();
@@ -1359,17 +1417,32 @@ function isBlocked(x, z, feet) {
 function purchaseBotGear(bot, now) {
   if (now < bot.nextPurchaseAt) return;
   bot.nextPurchaseAt = now + 3;
-  const preparingForRaid = now < bot.prepareUntil && bot.blocks <= 48;
-  if (bot.iron >= 4 && (bot.blocks <= 12 || preparingForRaid)) {
+  const inCombat = bot.objectiveType === 'defend' || bot.objectiveType === 'engage';
+  const options = [];
+  if (bot.iron >= 4 && bot.blocks <= 32) {
+    options.push({ kind: 'blocks', score: 0.7 + (32 - bot.blocks) / 32 * 1.7 + (bot.objectiveType === 'raid' ? 0.3 : 0) });
+  }
+  if (bot.weapon < 22 && bot.iron >= 12) {
+    options.push({ kind: 'ironWeapon', score: 1.1 + bot.aggression * 0.65 + (inCombat ? 0.7 : 0) });
+  }
+  if (bot.weapon < 34 && bot.gold >= 8) {
+    options.push({ kind: 'diamondWeapon', score: 1.5 + bot.aggression * 0.75 + (inCombat ? 0.55 : 0) });
+  }
+  if (bot.armor === 0 && bot.gold >= 8) {
+    options.push({ kind: 'armor', score: 1.2 + bot.caution * 0.8 + (inCombat ? 0.5 : 0) });
+  }
+  options.sort((a, b) => b.score - a.score);
+  const choice = options[0]?.kind;
+  if (choice === 'blocks') {
     bot.iron -= 4;
     bot.blocks += 32;
-  } else if (bot.weapon < 22 && bot.iron >= 12) {
+  } else if (choice === 'ironWeapon') {
     bot.iron -= 12;
     bot.weapon = 22;
-  } else if (bot.weapon < 34 && bot.gold >= 8) {
+  } else if (choice === 'diamondWeapon') {
     bot.gold -= 8;
     bot.weapon = 34;
-  } else if (bot.armor === 0 && bot.gold >= 8) {
+  } else if (choice === 'armor') {
     bot.gold -= 8;
     bot.armor = 0.3;
   }
@@ -1424,6 +1497,81 @@ function botTakeHit(bot, target, now) {
   if (target.health === 0) knockOutBot(target, now);
 }
 
+function botObjectiveKey(type, target) {
+  if (type === 'raid') return `pig:${target.team.id}`;
+  if (type === 'resupply') return `pickup:${target.mesh.uuid}`;
+  if (target.kind === 'player') return 'player';
+  return `bot:${target.team.id}:${target.slot}`;
+}
+
+function botObjectiveIsValid(bot) {
+  const target = bot.objectiveTarget;
+  if (!target) return false;
+  if (bot.objectiveType === 'raid') return target.alive && target.team.id !== bot.team.id;
+  if (bot.objectiveType === 'resupply') return pickups.includes(target) && target.teamId === bot.team.id;
+  if (bot.objectiveType === 'defend' || bot.objectiveType === 'engage') {
+    return target.team?.id !== bot.team.id && (target.kind === 'player' ? state.alive : target.alive);
+  }
+  return false;
+}
+
+function chooseBotObjective(bot, enemies, now) {
+  if (now < bot.nextObjectiveAt && botObjectiveIsValid(bot)) return;
+  const pos = bot.group.position;
+  const options = [];
+  const consider = (type, target, score) => {
+    if (!target || !Number.isFinite(score)) return;
+    const key = botObjectiveKey(type, target);
+    if (key === bot.objectiveKey) score += 0.28;
+    options.push({ type, target, key, score: score + Math.random() * 0.035 });
+  };
+
+  for (const enemy of enemies) {
+    const enemyPos = enemy.group.position;
+    const distance = Math.hypot(enemyPos.x - pos.x, enemyPos.z - pos.z);
+    const homeDistance = Math.hypot(enemyPos.x - bot.team.pig.x, enemyPos.z - bot.team.pig.z);
+    if (homeDistance < 14) {
+      const homePressure = (14 - homeDistance) / 14;
+      const damagedPig = 1 - bot.team.pig.health / bot.team.pig.maxHealth;
+      consider('defend', enemy, 2.0 + homePressure * 1.7 + damagedPig * 0.45 + bot.caution * 0.3 - distance * 0.055);
+    }
+    consider('engage', enemy, 1.05 + bot.aggression * 0.75 + Math.max(0, 10 - distance) * 0.12 - distance * 0.035);
+  }
+
+  const allies = entities.filter((ally) => ally !== bot && ally.active && ally.alive && ally.team.id === bot.team.id);
+  for (const pig of pigs) {
+    if (!pig.alive || pig.team.id === bot.team.id || !pig.team.active) continue;
+    const distance = Math.hypot(pig.x - pos.x, pig.z - pos.z);
+    const vulnerability = 1 - pig.health / pig.maxHealth;
+    const alliedFocus = allies.filter((ally) => ally.objectiveType === 'raid' && ally.objectiveKey === `pig:${pig.team.id}`).length;
+    consider('raid', pig, 1.55 * bot.aggression + vulnerability * 0.75 - distance * 0.019 - alliedFocus * 0.62);
+  }
+
+  for (const pickup of pickups) {
+    if (pickup.teamId !== bot.team.id) continue;
+    const distance = Math.hypot(pickup.mesh.position.x - pos.x, pickup.mesh.position.z - pos.z);
+    let need = 0;
+    if (pickup.resource === 'iron') {
+      if (bot.blocks <= 24) need += 0.8 + (24 - bot.blocks) / 24;
+      if (bot.weapon < 22 && bot.iron < 12) need += 0.75;
+    } else if (pickup.resource === 'gold') {
+      if (bot.weapon < 34 && bot.gold < 8) need += 0.85;
+      if (bot.armor === 0 && bot.gold < 8) need += 0.75;
+    }
+    if (need <= 0) continue;
+    const alliedFocus = allies.filter((ally) => ally.objectiveType === 'resupply' && ally.objectiveTarget === pickup).length;
+    consider('resupply', pickup, 0.95 + need * bot.resourcefulness - distance * 0.1 - alliedFocus * 0.7);
+  }
+
+  options.sort((a, b) => b.score - a.score);
+  const choice = options[0];
+  bot.objectiveType = choice?.type ?? null;
+  bot.objectiveTarget = choice?.target ?? null;
+  bot.objectiveKey = choice?.key ?? null;
+  bot.nextObjectiveAt = now + 0.55 + Math.random() * 0.25;
+  bot.combatTarget = choice?.type === 'defend' || choice?.type === 'engage' ? choice.target : null;
+}
+
 function moveBots(delta, now) {
   for (const bot of entities) {
     if (!bot.active) continue;
@@ -1433,7 +1581,6 @@ function moveBots(delta, now) {
       continue;
     }
 
-    purchaseBotGear(bot, now);
     const pos = bot.group.position;
     const enemies = entities.filter((enemy) => enemy !== bot && enemy.active && enemy.alive && enemy.team.id !== team.id &&
       (Math.hypot(enemy.group.position.x - pos.x, enemy.group.position.z - pos.z) < 10 ||
@@ -1443,67 +1590,30 @@ function moveBots(delta, now) {
         Math.hypot(camera.position.x - team.pig.x, camera.position.z - team.pig.z) < 14)) {
       enemies.push({ kind: 'player', team: playerTeam(), group: { position: camera.position } });
     }
-    if ((bot.combatTarget?.kind === 'player' && !state.alive) ||
-        (bot.combatTarget && bot.combatTarget.kind !== 'player' && !bot.combatTarget.alive)) {
-      bot.combatTarget = null;
-    }
-    if (now >= bot.nextCombatDecisionAt || !bot.combatTarget ||
-        bot.combatTarget.kind !== 'player' && !enemies.includes(bot.combatTarget)) {
-      const nearestEnemy = enemies.sort((a, b) =>
-        Math.hypot(a.group.position.x - pos.x, a.group.position.z - pos.z) -
-        Math.hypot(b.group.position.x - pos.x, b.group.position.z - pos.z))[0] ?? null;
-      bot.combatTarget = nearestEnemy;
-      bot.nextCombatDecisionAt = now + 1.2;
-    }
-    let targetPig = bot.targetPig;
-    if (!targetPig || !targetPig.alive || now > bot.nextTargetAt) {
-      const candidates = activeTeams().map((activeTeam) => activeTeam.pig)
-        .filter((pig) => pig && pig.team.id !== team.id && pig.alive);
-      targetPig = candidates.sort((a, b) =>
-        Math.hypot(a.x - pos.x, a.z - pos.z) - Math.hypot(b.x - pos.x, b.z - pos.z) ||
-        a.health - b.health)[0] ?? null;
-      if (targetPig !== bot.routeTargetPig) {
-        bot.routeTargetPig = targetPig;
-        bot.routeThroughCenter = Math.hypot(pos.x, pos.z) <= 13.25;
-      }
-      bot.targetPig = targetPig;
-      bot.nextTargetAt = now + 8;
-    }
-    const hostile = bot.combatTarget;
+    chooseBotObjective(bot, enemies, now);
+    purchaseBotGear(bot, now);
+    const hostile = bot.objectiveType === 'defend' || bot.objectiveType === 'engage'
+      ? bot.objectiveTarget : null;
     const hostileDistance = hostile
       ? Math.hypot(hostile.group.position.x - pos.x, hostile.group.position.z - pos.z)
       : Infinity;
-    const hostileThreatensHome = hostile && Math.hypot(hostile.group.position.x - team.pig.x,
-      hostile.group.position.z - team.pig.z) < 12;
-    const combatTarget = hostile && (hostileDistance < 6 || hostileThreatensHome) ? hostile : null;
-    if (now < bot.prepareUntil && !combatTarget) {
-      bot.velocityX = 0;
-      bot.velocityZ = 0;
-      continue;
-    }
-    const goalPig = targetPig && (!combatTarget || hostileDistance > 3.4) ? targetPig : null;
-    let goalX = combatTarget?.group.position.x ?? goalPig?.x ?? team.x;
-    let goalZ = combatTarget?.group.position.z ?? goalPig?.z ?? team.z;
+    const combatTarget = hostile;
+    const goalPig = bot.objectiveType === 'raid' ? bot.objectiveTarget : null;
+    const goalPickup = bot.objectiveType === 'resupply' ? bot.objectiveTarget : null;
+    const goalX = combatTarget?.group.position.x ?? goalPig?.x ?? goalPickup?.mesh.position.x ?? team.x;
+    const goalZ = combatTarget?.group.position.z ?? goalPig?.z ?? goalPickup?.mesh.position.z ?? team.z;
     const targetDistance = Math.hypot(goalX - pos.x, goalZ - pos.z);
-    const attackRange = combatTarget && hostileDistance <= 3.4 ? 3.4 : 2.8;
+    const attackRange = combatTarget ? 3.4 : 2.8;
     if ((combatTarget && hostileDistance <= 3.4) && targetDistance <= attackRange) {
       bot.group.lookAt(goalX, 1, goalZ);
       if (now >= bot.attackAt) botTakeHit(bot, combatTarget, now);
     } else if (goalPig && targetDistance <= 3.4) {
       bot.group.lookAt(goalX, 1, goalZ);
       if (now >= bot.attackAt) botTakeHit(bot, goalPig, now);
+    } else if (goalPickup && targetDistance <= 1.45) {
+      bot.velocityX = 0;
+      bot.velocityZ = 0;
     } else {
-      const centerDistance = Math.hypot(pos.x, pos.z);
-      if (!bot.routeThroughCenter && centerDistance <= 13.25) bot.routeThroughCenter = true;
-      if (!bot.routeThroughCenter && centerDistance > 13.25 &&
-          Math.hypot(goalX - pos.x, goalZ - pos.z) > 14) {
-        goalX = 0;
-        goalZ = 0;
-        if (Math.abs(pos.x) > Math.abs(pos.z)) goalZ = pos.z;
-        else goalX = pos.x;
-      } else if (Math.abs(goalX - pos.x) > 0.8 && Math.abs(goalZ - pos.z) > 0.8) {
-        goalZ = pos.z;
-      }
       const dx = goalX - pos.x;
       const dz = goalZ - pos.z;
       const distance = Math.hypot(dx, dz) || 1;
@@ -1570,6 +1680,10 @@ function moveBots(delta, now) {
 function useItem() {
   if (state.mode !== 'playing' || !state.alive) return;
   if (state.selected === 2) {
+    if (onlineMatch) {
+      sendMultiplayerMessage({ type: 'use', itemId: 'apple' });
+      return;
+    }
     if (state.player.apples < 1) return showToast('No apples left.');
     if (state.health >= 100) return showToast('You are already at full health.');
     state.player.apples--;
@@ -1578,12 +1692,20 @@ function useItem() {
     $('#health-fill').style.width = `${state.health}%`;
     updateHotbar();
     showToast('Golden apple! +40 health.');
-  } else if (state.selected === 3) throwFireball();
-  else if (state.selected === 5) usePearl();
-  else if (state.selected === 6) useSpeedPotion();
+  } else if (state.selected === 3) {
+    if (onlineMatch) return showToast('Fireballs are disabled in online matches for now.');
+    throwFireball();
+  } else if (state.selected === 5) {
+    if (onlineMatch) return showToast('Pearls are disabled in online matches for now.');
+    usePearl();
+  } else if (state.selected === 6) {
+    if (onlineMatch) return showToast('Speed potions are disabled in online matches for now.');
+    useSpeedPotion();
+  }
 }
 
 function usePearl() {
+  if (onlineMatch) return showToast('Pearls are disabled in online matches for now.');
   if (state.player.pearls < 1) return showToast('No ender pearls left.');
   raycaster.setFromCamera(centerScreen, camera);
   raycaster.far = 24;
@@ -1605,6 +1727,7 @@ function usePearl() {
 }
 
 function useSpeedPotion() {
+  if (onlineMatch) return showToast('Speed potions are disabled in online matches for now.');
   if (state.player.potions < 1) return showToast('No speed potions left.');
   state.player.potions--;
   state.player.speedBoostUntil = performance.now() / 1000 + 18;
@@ -1613,6 +1736,7 @@ function useSpeedPotion() {
 }
 
 function throwFireball() {
+  if (onlineMatch) return showToast('Fireballs are disabled in online matches for now.');
   if (state.player.fireballs < 1) return showToast('No fireballs left.');
   state.player.fireballs--;
   updateHotbar();
@@ -1670,9 +1794,11 @@ function openShop() {
     const row = document.createElement('div');
     row.className = 'shop-item';
     const cost = Object.entries(item.price).map(([name, amount]) => `${amount} ${capitalize(name)}`).join(' + ');
-    const canBuy = item.canBuy ? item.canBuy() : true;
+    const onlineSupported = !onlineMatch || ['blocks', 'sword', 'diamond-sword', 'apple', 'armor'].includes(item.id);
+    const canBuy = onlineSupported && (item.canBuy ? item.canBuy() : true);
     const canAfford = canBuy && Object.entries(item.price).every(([name, amount]) => state.player[name] >= amount);
-    row.innerHTML = `<span class="item-icon">${item.icon}</span><span><strong>${item.label}</strong><small>${item.description}</small></span><button ${canAfford ? '' : 'disabled'}>${canBuy ? cost : item.disabledLabel || 'Unavailable'}</button>`;
+    const buttonLabel = !onlineSupported ? 'Disabled online' : canBuy ? cost : item.disabledLabel || 'Unavailable';
+    row.innerHTML = `<span class="item-icon">${item.icon}</span><span><strong>${item.label}</strong><small>${item.description}</small></span><button ${canAfford ? '' : 'disabled'}>${buttonLabel}</button>`;
     row.querySelector('button').addEventListener('click', () => buy(item));
     shopItems.append(row);
   }
@@ -1683,6 +1809,10 @@ function openShop() {
 }
 
 function buy(item) {
+  if (onlineMatch) {
+    sendMultiplayerMessage({ type: 'buy', itemId: item.id });
+    return;
+  }
   if (item.canBuy && !item.canBuy()) return showToast('You already own that upgrade.');
   if (!Object.entries(item.price).every(([name, amount]) => state.player[name] >= amount)) return showToast('Not enough resources.');
   for (const [name, amount] of Object.entries(item.price)) state.player[name] -= amount;
@@ -1995,7 +2125,6 @@ function startGame() {
     return;
   }
   if (state.mode === 'won' || state.mode === 'lost') window.location.reload();
-  const firstStart = !state.started;
   state.started = true;
   state.mode = 'playing';
   $('.match-picker').classList.add('hidden');
@@ -2006,11 +2135,6 @@ function startGame() {
   updateTouchControlsVisibility();
   focusGameCanvas();
   const now = performance.now() / 1000;
-  if (firstStart) {
-    for (const bot of entities) {
-      if (bot.active) bot.prepareUntil = now + 12;
-    }
-  }
   state.lastIronGen = now;
   state.lastGoldGen = now;
   state.lastCentralGen = now;
@@ -2272,10 +2396,12 @@ function frame() {
           yaw: state.yaw,
         });
       }
-      moveBots(delta, time);
-      updateGenerator(time);
+      if (!onlineMatch) {
+        moveBots(delta, time);
+        updateGenerator(time);
+      }
       updatePickups(time, delta);
-      updateArrows(delta);
+      if (!onlineMatch) updateArrows(delta);
       updateInteraction();
       const target = state.alive ? getAimTarget() : null;
       if (target !== lastAimTarget) {
@@ -2283,8 +2409,8 @@ function frame() {
         crosshair.classList.toggle('targeting', Boolean(target));
         crosshair.setAttribute('aria-label', target ? `Aiming at ${target.team.name}` : 'Aim reticle');
       }
-      for (const fly of [...fireballs]) fly(delta);
-      if (camera.position.y < -25 && state.alive) hurtPlayer(100);
+      if (!onlineMatch) for (const fly of [...fireballs]) fly(delta);
+      if (!onlineMatch && camera.position.y < -25 && state.alive) hurtPlayer(100);
     }
   } else heldItem.visible = false;
   for (const remote of remotePlayers.values()) {

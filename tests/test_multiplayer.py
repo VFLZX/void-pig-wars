@@ -85,8 +85,8 @@ class MultiplayerServerTests(unittest.IsolatedAsyncioTestCase):
         }))
         hit = await self.receive_type(second, "hit")
         self.assertEqual(hit["targetId"], victim["id"])
-        self.assertEqual(hit["health"], 82)
-        self.assertEqual(victim["health"], 82)
+        self.assertEqual(hit["health"], 90)
+        self.assertEqual(victim["health"], 90)
 
     async def test_pig_hits_are_shared_and_team_scoped(self):
         first = await self.client("solo")

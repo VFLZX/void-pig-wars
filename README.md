@@ -14,7 +14,11 @@ The game website is published on GitHub Pages at <https://vflzx.github.io/void-p
 
 The same site includes a browser launcher at <https://vflzx.github.io/void-pig-wars/launcher.html>. It embeds the game, accepts a game URL (pre-filled with the Pages URL), and reports the game's live status to the launcher.
 
-Online players select the same mode and join the matchmaking queue. A 1v1 room starts with two human players; doubles and free-for-all start when four humans join. The server assigns teams and shares a single shared state so all players can see each other, placed blocks, resource pickups, and pig health updates.
+Online players select the same mode and join the matchmaking queue. A 1v1 room starts with two human players; doubles and free-for-all start when four humans join. The server assigns teams and owns online player health, pig health, resource pickups, per-player resources and inventory, purchases, block placement, melee combat, respawns, and the match result. Resource pickups are shared: any living player can collect one by reaching it. In doubles, a team remains active while at least one teammate is connected; disconnecting forfeits that player's life.
+
+Online movement is still simulated by each browser and reported to the server, which checks movement bounds and a speed limit. It does not yet validate the full collision map, so online movement is not cheat-proof. Bows, arrows, fireballs, ender pearls, and speed potions are disabled in online matches until their effects can be validated by the server. Melee, wool, swords, armor, and golden apples are supported online.
+
+Finished and abandoned rooms are cleaned up after 30 seconds. The hosted multiplayer service is an early prototype and currently keeps match state in memory; restarting the service ends active games.
 
 ## Run a local online match
 
@@ -52,6 +56,6 @@ The repository includes a Render Blueprint in `render.yaml`. Create a Render Blu
 
 On iPadOS Safari with an Apple keyboard, tap **Play vs Bots** or **Find a Game** to focus the game, then use **W A S D** to move and the **arrow keys** to look without pointer lock. Space jumps, Shift sneaks, E opens the shop, and items can be used with the on-screen touch controls.
 
-Resources spawn at each team's generator and on the central island. Walk over them to collect them. Rival bots collect their own generator drops, buy upgrades and wool, build supported routes toward the center island and your pig, and can respawn after a short delay while their team still has a pig alive.
+Resources spawn at each team's generator and on the central island. Walk over them to collect them. Rival bots weigh nearby threats, their pig's health, useful resources, and available upgrades to choose whether to defend, fight, resupply, or raid. Their objectives can change during a match, and they build supported bridges toward their current goal. Bots respawn after a short delay while their team still has a pig alive.
 
 Movement uses acceleration, gravity, jumping, and collisions with placed blocks. Hits apply knockback; falling into the void costs a life and returns you to your island while your pig is alive.
