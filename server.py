@@ -65,6 +65,7 @@ STATE_BROADCAST_INTERVAL = 0.1
 MAX_HORIZONTAL_SPEED = 12.0
 MAX_VERTICAL_SPEED = 10.0
 MOVEMENT_GRACE_DISTANCE = 0.5
+MAX_CONNECTIONS = 128
 
 
 def finite_number(value):
@@ -77,6 +78,7 @@ class MatchServer:
         self.rooms = {}
         self.connections = {}
         self.next_player_number = 1
+        self.active_sockets = set()
 
     async def send(self, socket, message):
         if socket is None or socket.state is not State.OPEN:
@@ -562,6 +564,12 @@ class MatchServer:
         return changed
 
     async def connection_handler(self, socket):
+        # There is no await between checking and adding, so this is atomic with
+        # respect to other handlers on the same asyncio event loop.
+        if len(self.active_sockets) >= MAX_CONNECTIONS:
+            await socket.close(code=1013, reason="Server is full. Try again later.")
+            return
+        self.active_sockets.add(socket)
         try:
             async for raw_message in socket:
                 if len(raw_message) > 4096:
@@ -579,6 +587,7 @@ class MatchServer:
         except ConnectionClosed:
             pass
         finally:
+            self.active_sockets.discard(socket)
             await self.leave_waiting(socket)
             connection = self.connections.pop(socket, None)
             if connection:
@@ -631,7 +640,7 @@ async def health_check(connection, request):
 
 
 async def main():
-    host = os.environ.get("HOST", "0.0.0.0")
+    host = os.environ.get("HOST", "127.0.0.1")
     port = int(os.environ.get("PORT", "8765"))
     origin_setting = os.environ.get("ALLOWED_ORIGINS", "").strip()
     origins = [origin.strip() for origin in origin_setting.split(",") if origin.strip()] or None

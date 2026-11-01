@@ -1,6 +1,14 @@
 import * as THREE from './vendor/three.module.js';
 import { avatarPose, firstPersonAttackPose, shopkeeperIdlePose } from './animation-utils.mjs';
 import { nextRenderScale, nextScheduledItem, scoreBotEngagement } from './bot-decision-utils.mjs';
+import { resolveMultiplayerServerUrl } from './multiplayer-config.mjs';
+import { encodeBotCandidate, isValidBotPolicy, scoreBotCandidate } from './bot-policy.mjs';
+
+let botPolicyModel = null;
+fetch(new URL('./bot-policy-weights.json', import.meta.url))
+  .then((response) => response.ok ? response.json() : null)
+  .then((model) => { if (model?.trained && isValidBotPolicy(model)) botPolicyModel = model; })
+  .catch(() => { botPolicyModel = null; });
 
 const $ = (selector) => document.querySelector(selector);
 const canvas = $('#world');
@@ -205,10 +213,7 @@ function playerTeam() {
 }
 
 function multiplayerServerUrl() {
-  if (['localhost', '127.0.0.1'].includes(window.location.hostname)) {
-    return `ws://${window.location.hostname}:8765`;
-  }
-  return 'wss://void-pig-wars-multiplayer.onrender.com';
+  return resolveMultiplayerServerUrl({ hostname: window.location.hostname });
 }
 
 const state = {
@@ -879,17 +884,24 @@ function findOnlineMatch() {
     return;
   }
   if (onlineMatch) return;
+  const serverUrl = multiplayerServerUrl();
+  if (!serverUrl) {
+    queueStatusPanel.classList.remove('hidden');
+    multiplayerStatus.textContent = 'Online play is not configured yet. The game owner must set up the PC server address.';
+    queueStatusCopy.textContent = multiplayerStatus.textContent;
+    return;
+  }
   onlineMatchButton.disabled = false;
   onlineMatchButton.textContent = 'CANCEL SEARCH';
   multiplayerStatus.textContent = 'Connecting to multiplayer server…';
   queueStatusPanel.classList.remove('hidden');
   try {
-    multiplayerSocket = new WebSocket(multiplayerServerUrl());
+    multiplayerSocket = new WebSocket(serverUrl);
   } catch (error) {
     console.error('Could not open the matchmaking connection.', error);
     queueStatusPanel.classList.add('hidden');
     onlineMatchButton.textContent = 'FIND A GAME';
-    multiplayerStatus.textContent = 'Could not start matchmaking. Check the server deployment and retry.';
+    multiplayerStatus.textContent = 'Could not start matchmaking. Check that the PC server is running and retry.';
     return;
   }
   const socket = multiplayerSocket;
@@ -1855,6 +1867,33 @@ function updateBotRoute(bot, target, now, routeBudget) {
   return { waypoint, deferred: false };
 }
 
+function botPolicyContext(bot, target = null, enemies = [], allies = []) {
+  const pos = bot.group.position;
+  const targetPosition = target?.group?.position ?? target?.mesh?.position ?? target;
+  const distance = targetPosition && Number.isFinite(targetPosition.x) && Number.isFinite(targetPosition.z)
+    ? Math.hypot(targetPosition.x - pos.x, targetPosition.z - pos.z) : 0;
+  const pigThreat = enemies.reduce((count, enemy) => {
+    const enemyPos = enemy.group?.position;
+    return count + (enemyPos && Math.hypot(enemyPos.x - bot.team.pig.x, enemyPos.z - bot.team.pig.z) < 14 ? 1 : 0);
+  }, 0);
+  const targetHealth = target?.kind === 'player' ? state.health : target?.health ?? 100;
+  const targetMaxHealth = target?.kind === 'player' ? 100 : target?.maxHealth ?? 100;
+  return {
+    health: bot.health, maxHealth: 100, distance, targetHealth, targetMaxHealth,
+    pigHealth: bot.team.pig.health, pigMaxHealth: bot.team.pig.maxHealth, pigThreat,
+    enemyCount: enemies.length, incomingPressure: enemies.length * 8, alliedPressure: allies.length * 8,
+    allyFocus: allies.length, iron: bot.iron, gold: bot.gold, blocks: bot.blocks,
+    weapon: bot.weapon, armor: bot.armor, pickupCount: pickups.filter((pickup) => pickup.teamId === bot.team.id).length,
+    teamSize: Math.max(1, entities.filter((ally) => ally.active && ally.team.id === bot.team.id).length +
+      (bot.team.id === localTeamId ? 1 : 0)),
+  };
+}
+
+function policyCandidateScore(bot, kind, target, enemies, allies) {
+  if (!botPolicyModel) return null;
+  return scoreBotCandidate(encodeBotCandidate(botPolicyContext(bot, target, enemies, allies), { kind }), botPolicyModel);
+}
+
 function purchaseBotGear(bot, now) {
   if (now < bot.nextPurchaseAt) return;
   bot.nextPurchaseAt = now + 3;
@@ -1862,22 +1901,27 @@ function purchaseBotGear(bot, now) {
   const options = [];
   const desiredBlockStock = bot.objectiveType === 'raid' ? 80 : 72;
   if (bot.iron >= 4 && bot.blocks < desiredBlockStock) {
-    options.push({ kind: 'blocks', score: 1.1 + (desiredBlockStock - bot.blocks) / 32 * 1.2 +
+    options.push({ kind: 'blocks', policyKind: 'buyBlocks', score: 1.1 + (desiredBlockStock - bot.blocks) / 32 * 1.2 +
       (bot.objectiveType === 'raid' ? 0.35 : 0) });
   }
   if (bot.weapon < 22 && bot.iron >= 12) {
-    options.push({ kind: 'ironWeapon', score: 1.1 + bot.aggression * 0.65 + (inCombat ? 0.7 : 0) });
+    options.push({ kind: 'ironWeapon', policyKind: 'buyIronSword', score: 1.1 + bot.aggression * 0.65 + (inCombat ? 0.7 : 0) });
   }
   if (bot.weapon < 34 && bot.gold >= 8) {
-    options.push({ kind: 'diamondWeapon', score: 1.5 + bot.aggression * 0.75 + (inCombat ? 0.55 : 0) });
+    options.push({ kind: 'diamondWeapon', policyKind: 'buyDiamondSword', score: 1.5 + bot.aggression * 0.75 + (inCombat ? 0.55 : 0) });
   }
   if (bot.armor === 0 && bot.gold >= 8) {
-    options.push({ kind: 'armor', score: 1.2 + bot.caution * 0.8 + (inCombat ? 0.5 : 0) });
+    options.push({ kind: 'armor', policyKind: 'buyArmor', score: 1.2 + bot.caution * 0.8 + (inCombat ? 0.5 : 0) });
   }
   if (bot.apples < 1 && bot.health < 70 && bot.gold >= 4) {
-    options.push({ kind: 'apple', score: 2.4 + (70 - bot.health) / 70 * 1.5 + bot.caution * 0.35 });
+    options.push({ kind: 'apple', policyKind: 'buyApple', score: 2.4 + (70 - bot.health) / 70 * 1.5 + bot.caution * 0.35 });
   }
-  options.sort((a, b) => b.score - a.score);
+  const context = botPolicyContext(bot);
+  options.sort((a, b) => {
+    const aPolicy = botPolicyModel && scoreBotCandidate(encodeBotCandidate(context, { kind: a.policyKind }), botPolicyModel);
+    const bPolicy = botPolicyModel && scoreBotCandidate(encodeBotCandidate(context, { kind: b.policyKind }), botPolicyModel);
+    return Number.isFinite(aPolicy) && Number.isFinite(bPolicy) ? bPolicy - aPolicy : b.score - a.score;
+  });
   const choice = options[0]?.kind;
   if (choice === 'blocks') {
     bot.iron -= 4;
@@ -2032,8 +2076,16 @@ function chooseBotObjective(bot, enemies, now) {
   const consider = (type, target, score) => {
     if (!target || !Number.isFinite(score)) return;
     const key = botObjectiveKey(type, target);
-    if (key === bot.objectiveKey) score += 0.28;
-    options.push({ type, target, key, score: score + Math.random() * 0.035 });
+    const policyKind = { defend: 'defend', engage: 'engage', raid: 'raid',
+      resupply: 'resupply', retreat: 'retreat' }[type];
+    const learnedScore = policyKind ? policyCandidateScore(bot, policyKind, target, enemies, allies) : null;
+    if (Number.isFinite(learnedScore)) {
+      options.push({ type, target, key, score: learnedScore + (key === bot.objectiveKey ? 0.02 : 0) +
+        bot.aggression * 0.0001 + Math.random() * 0.00001 });
+    } else {
+      if (key === bot.objectiveKey) score += 0.28;
+      options.push({ type, target, key, score: score + Math.random() * 0.035 });
+    }
   };
 
   const homeThreat = enemies.some((enemy) =>

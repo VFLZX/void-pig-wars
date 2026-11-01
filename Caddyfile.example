@@ -1,0 +1,4 @@
+# Replace this name with the hostname assigned by your dynamic DNS provider.
+YOUR_DYNAMIC_DNS_HOSTNAME {
+	reverse_proxy 127.0.0.1:8765
+}

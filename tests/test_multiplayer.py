@@ -375,5 +375,17 @@ class MultiplayerServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(teammate["health"], 100)
 
 
+    async def test_connection_limit_rejects_excess_socket_before_queueing(self):
+        first = await self.client("solo")
+        await self.receive_type(first, "waiting")
+        with patch("server.MAX_CONNECTIONS", 1):
+            excess = await connect(f"ws://127.0.0.1:{self.port}")
+            self.clients.append(excess)
+            with self.assertRaises(Exception) as closed:
+                await asyncio.wait_for(excess.recv(), timeout=2)
+        self.assertEqual(getattr(closed.exception, "code", None), 1013)
+        self.assertEqual(len(self.app.queues["solo"]), 1)
+        self.assertEqual(len(self.app.active_sockets), 1)
+
 if __name__ == "__main__":
     unittest.main()
