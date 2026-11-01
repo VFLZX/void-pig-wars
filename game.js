@@ -1,5 +1,6 @@
 import * as THREE from './vendor/three.module.js';
 import { avatarPose, firstPersonAttackPose, shopkeeperIdlePose } from './animation-utils.mjs';
+import { nextRenderScale, nextScheduledItem, scoreBotEngagement } from './bot-decision-utils.mjs';
 
 const $ = (selector) => document.querySelector(selector);
 const canvas = $('#world');
@@ -37,6 +38,8 @@ let onlinePlayerId = null;
 let lastNetworkMoveAt = 0;
 const remotePlayers = new Map();
 const networkBlockKeys = new Set();
+const networkBlockMeshes = new Set();
+let networkBlockSyncIndex = 0;
 const DEFAULT_BINDINGS = {
   forward: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD',
   jump: 'Space', sneak: 'ShiftLeft', shop: 'KeyE',
@@ -82,7 +85,8 @@ try {
 }
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
-renderer.setPixelRatio(0.85);
+let adaptiveRenderScale = 0.85;
+renderer.setPixelRatio(adaptiveRenderScale);
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 
@@ -146,6 +150,7 @@ let botNavigationRevision = 0;
 let botNavigationSurfaceCache = null;
 let botNavigationBlockerCache = new Map();
 let botNavigationCacheRevision = -1;
+let botRoutePlannerCursor = 0;
 const pickups = [];
 const entities = [];
 const pigs = [];
@@ -531,21 +536,25 @@ function createRemotePlayer(player) {
 
 function applyNetworkBlock(block) {
   const key = `${block.x},${block.y},${block.z}`;
-  if (networkBlockKeys.has(key)) return;
+  if (networkBlockKeys.has(key)) return false;
   const team = teams.find((entry) => entry.id === block.teamId) ?? playerTeam();
-  makeBlock(block.x, block.y, block.z,
+  const mesh = makeBlock(block.x, block.y, block.z,
     new THREE.MeshLambertMaterial({ color: team.color, flatShading: true }));
   networkBlockKeys.add(key);
+  networkBlockMeshes.add(mesh);
+  return true;
 }
 
 function reconcileNetworkPickups(networkPickups = []) {
   const incomingIds = new Set();
+  const existingIds = new Set(pickups.map((entry) => entry.id).filter(Boolean));
   for (const pickup of networkPickups) {
     incomingIds.add(pickup.id);
-    if (pickups.some((entry) => entry.id === pickup.id)) continue;
+    if (existingIds.has(pickup.id)) continue;
     const colors = { iron: '#d9e1ef', gold: '#ffd04c', emerald: '#55f0a2' };
     const { x, y, z } = pickup.position;
     spawnPickup(pickup.resource, x, z, pickup.amount, colors[pickup.resource] || '#ffffff', y, pickup.teamId, pickup.id);
+    existingIds.add(pickup.id);
   }
   for (let index = pickups.length - 1; index >= 0; index--) {
     const pickup = pickups[index];
@@ -556,7 +565,11 @@ function reconcileNetworkPickups(networkPickups = []) {
 }
 
 function applyNetworkState(networkState) {
-  for (const block of networkState.blocks || []) applyNetworkBlock(block);
+  const networkBlocks = networkState.blocks || [];
+  while (networkBlockSyncIndex < networkBlocks.length) {
+    applyNetworkBlock(networkBlocks[networkBlockSyncIndex]);
+    networkBlockSyncIndex++;
+  }
   reconcileNetworkPickups(networkState.pickups || []);
   const playersByTeam = new Map();
   const connectedPlayers = (networkState.players || []).filter((player) => player.connected).length;
@@ -637,6 +650,31 @@ function applyNetworkState(networkState) {
 }
 
 function beginOnlineMatch(message) {
+  for (const remote of remotePlayers.values()) {
+    scene.remove(remote.group);
+    remote.group.traverse((object) => {
+      object.geometry?.dispose();
+      for (const material of (Array.isArray(object.material) ? object.material : [object.material])) {
+        material?.map?.dispose();
+        material?.dispose();
+      }
+    });
+  }
+  remotePlayers.clear();
+  for (const mesh of networkBlockMeshes) {
+    scene.remove(mesh);
+    mesh.material.dispose();
+    const meshIndex = buildMeshes.indexOf(mesh);
+    if (meshIndex !== -1) buildMeshes.splice(meshIndex, 1);
+  }
+  if (networkBlockMeshes.size) {
+    for (let index = worldSurfaces.length - 1; index >= 0; index--) {
+      if (networkBlockMeshes.has(worldSurfaces[index].mesh)) worldSurfaces.splice(index, 1);
+    }
+  }
+  networkBlockMeshes.clear();
+  networkBlockKeys.clear();
+  networkBlockSyncIndex = 0;
   onlineMatch = true;
   onlineRoomId = message.roomId;
   onlinePlayerId = message.playerId;
@@ -723,7 +761,7 @@ function handleMultiplayerMessage(message) {
       if (pig?.group) spawnHitEffect(pig.group.position.clone().add(new THREE.Vector3(0, 1.1, 0)));
     }
   } else if (message.type === 'block_placed') {
-    applyNetworkBlock(message.block);
+    if (applyNetworkBlock(message.block)) networkBlockSyncIndex++;
   } else if (message.type === 'action_rejected') {
     const messages = {
       already_owned: 'You already own that upgrade.',
@@ -1668,7 +1706,7 @@ function botRouteHeuristic(gx, gz, goalGX, goalGZ) {
 function findBotRoute(bot, target) {
   const targetX = target.group?.position.x ?? target.mesh?.position.x ?? target.x;
   const targetZ = target.group?.position.z ?? target.mesh?.position.z ?? target.z;
-  if (!Number.isFinite(targetX) || !Number.isFinite(targetZ)) return null;
+  if (!Number.isFinite(targetX) || !Number.isFinite(targetZ)) return { waypoint: null, deferred: false };
   const nodes = botNavigationNodeMap();
   const start = nearestBotNavigationNode(nodes, bot.group.position.x, bot.group.position.z, bot.group.position.y, 1.25);
   const targetFeet = target.kind === 'player'
@@ -1762,7 +1800,7 @@ function findBotRoute(bot, target) {
   return { waypoints: path, targetX, targetZ, revision: botNavigationRevision };
 }
 
-function updateBotRoute(bot, target, now) {
+function updateBotRoute(bot, target, now, routeBudget) {
   const targetX = target.group?.position.x ?? target.mesh?.position.x ?? target.x;
   const targetZ = target.group?.position.z ?? target.mesh?.position.z ?? target.z;
   if (!Number.isFinite(targetX) || !Number.isFinite(targetZ)) return null;
@@ -1784,6 +1822,15 @@ function updateBotRoute(bot, target, now) {
   const needsRoute = !bot.route || bot.routeRevision !== botNavigationRevision ||
     bot.routeObjectiveKey !== bot.objectiveKey || now >= bot.routeNextPlanAt || targetMoved || stalled;
   if (needsRoute) {
+    const routeIsStillUsable = bot.route && bot.routeRevision === botNavigationRevision &&
+      bot.routeObjectiveKey === bot.objectiveKey;
+    if (routeBudget.used) {
+      return {
+        waypoint: routeIsStillUsable ? bot.route.waypoints[bot.routeIndex] ?? null : null,
+        deferred: !routeIsStillUsable,
+      };
+    }
+    routeBudget.used = true;
     bot.route = findBotRoute(bot, target);
     bot.routeIndex = 0;
     bot.routeRevision = botNavigationRevision;
@@ -1798,7 +1845,7 @@ function updateBotRoute(bot, target, now) {
   bot.routeLastDistance = waypoint
     ? Math.hypot(waypoint.x - bot.group.position.x, waypoint.z - bot.group.position.z)
     : Infinity;
-  return waypoint;
+  return { waypoint, deferred: false };
 }
 
 function purchaseBotGear(bot, now) {
@@ -2007,10 +2054,19 @@ function chooseBotObjective(bot, enemies, now) {
     }
     const allyAlreadyEngaging = allies.filter((ally) => ally.objectiveType === 'engage' &&
       ally.objectiveKey === botObjectiveKey('engage', enemy)).length;
-    const riskPenalty = risk.outnumbered && bot.health < 70 ? 0.95 : 0;
-    const targetValue = 0.12 * (1 - (enemy.health || 100) / 100);
-    consider('engage', enemy, 1.05 + bot.aggression * 0.75 + Math.max(0, 10 - distance) * 0.12 -
-      distance * 0.035 + targetValue - riskPenalty - allyAlreadyEngaging * 0.4);
+    const targetHealth = enemy.kind === 'player' ? state.health : enemy.health;
+    const targetMaxHealth = enemy.kind === 'player' ? 100 : enemy.maxHealth || 100;
+    const targetWeapon = enemy.kind === 'player' ? state.player.weapon : enemy.weapon || 10;
+    consider('engage', enemy, scoreBotEngagement({
+      distance,
+      aggression: bot.aggression,
+      targetHealth,
+      targetMaxHealth,
+      targetWeapon,
+      botHealth: bot.health,
+      outnumbered: risk.outnumbered,
+      allyFocus: allyAlreadyEngaging,
+    }));
   }
 
   for (const pig of pigs) {
@@ -2042,12 +2098,18 @@ function chooseBotObjective(bot, enemies, now) {
   bot.objectiveType = choice?.type ?? null;
   bot.objectiveTarget = choice?.target ?? null;
   bot.objectiveKey = choice?.key ?? null;
-  bot.nextObjectiveAt = now + 0.55 + Math.random() * 0.25;
+  bot.nextObjectiveAt = now + 0.32 + Math.random() * 0.12;
   bot.combatTarget = choice?.type === 'defend' || choice?.type === 'engage' ? choice.target : null;
 }
 
 function moveBots(delta, now) {
-  for (const bot of entities) {
+  const scheduledRoute = nextScheduledItem(entities, botRoutePlannerCursor,
+    (candidate) => candidate.active && candidate.alive);
+  botRoutePlannerCursor = scheduledRoute.nextCursor;
+  const routeBudget = { used: false };
+  const firstBotIndex = scheduledRoute.index < 0 ? 0 : scheduledRoute.index;
+  for (let offset = 0; offset < entities.length; offset++) {
+    const bot = entities[(firstBotIndex + offset) % entities.length];
     if (!bot.active) continue;
     const team = bot.team;
     if (!bot.alive) {
@@ -2056,15 +2118,17 @@ function moveBots(delta, now) {
     }
 
     const pos = bot.group.position;
-    const enemies = entities.filter((enemy) => enemy !== bot && enemy.active && enemy.alive && enemy.team.id !== team.id &&
-      (Math.hypot(enemy.group.position.x - pos.x, enemy.group.position.z - pos.z) < 10 ||
-       Math.hypot(enemy.group.position.x - team.pig.x, enemy.group.position.z - team.pig.z) < 14));
-    if (team.id !== localTeamId && state.alive &&
-        (Math.hypot(camera.position.x - pos.x, camera.position.z - pos.z) < 10 ||
-        Math.hypot(camera.position.x - team.pig.x, camera.position.z - team.pig.z) < 14)) {
-      enemies.push({ kind: 'player', team: playerTeam(), group: { position: camera.position } });
+    if (now >= bot.nextObjectiveAt || !botObjectiveIsValid(bot)) {
+      const enemies = entities.filter((enemy) => enemy !== bot && enemy.active && enemy.alive && enemy.team.id !== team.id &&
+        (Math.hypot(enemy.group.position.x - pos.x, enemy.group.position.z - pos.z) < 10 ||
+         Math.hypot(enemy.group.position.x - team.pig.x, enemy.group.position.z - team.pig.z) < 14));
+      if (team.id !== localTeamId && state.alive &&
+          (Math.hypot(camera.position.x - pos.x, camera.position.z - pos.z) < 10 ||
+          Math.hypot(camera.position.x - team.pig.x, camera.position.z - team.pig.z) < 14)) {
+        enemies.push({ kind: 'player', team: playerTeam(), group: { position: camera.position } });
+      }
+      chooseBotObjective(bot, enemies, now);
     }
-    chooseBotObjective(bot, enemies, now);
     purchaseBotGear(bot, now);
     if (bot.objectiveType === 'retreat' && bot.health <= 60 && bot.apples > 0 && now >= bot.nextHealAt) {
       bot.apples--;
@@ -2085,8 +2149,10 @@ function moveBots(delta, now) {
     let targetZ = combatTarget?.group.position.z ?? goalPig?.z ?? goalPickup?.mesh.position.z ?? goalWaypoint?.z ?? team.z;
     let directTargetDistance = Math.hypot(targetX - pos.x, targetZ - pos.z);
     let interactionRange = combatTarget ? 3.4 : goalPig ? 2.8 : goalPickup ? 1.45 : 1.1;
-    let routeWaypoint = directTargetDistance > interactionRange ? updateBotRoute(bot, goalTarget, now) : null;
-    if (!routeWaypoint && directTargetDistance > interactionRange) {
+    let routeResult = directTargetDistance > interactionRange
+      ? updateBotRoute(bot, goalTarget, now, routeBudget) : { waypoint: null, deferred: false };
+    let routeWaypoint = routeResult.waypoint;
+    if (!routeWaypoint && !routeResult.deferred && directTargetDistance > interactionRange) {
       if (bot.objectiveType !== 'home') {
         bot.objectiveType = 'home';
         bot.objectiveTarget = team.pig;
@@ -2104,7 +2170,9 @@ function moveBots(delta, now) {
         targetZ = team.pig.z;
         directTargetDistance = Math.hypot(targetX - pos.x, targetZ - pos.z);
         interactionRange = 1.1;
-        routeWaypoint = directTargetDistance > interactionRange ? updateBotRoute(bot, team.pig, now) : null;
+        routeResult = directTargetDistance > interactionRange
+          ? updateBotRoute(bot, team.pig, now, routeBudget) : { waypoint: null, deferred: false };
+        routeWaypoint = routeResult.waypoint;
       }
     }
     const routeUnavailable = !routeWaypoint && directTargetDistance > interactionRange;
@@ -2112,7 +2180,10 @@ function moveBots(delta, now) {
     const goalZ = routeWaypoint?.z ?? targetZ;
     const targetDistance = Math.hypot(goalX - pos.x, goalZ - pos.z);
     const attackRange = combatTarget ? 3.4 : 2.8;
-    if ((combatTarget && hostileDistance <= 3.4) && directTargetDistance <= attackRange) {
+    if (routeResult.deferred) {
+      bot.velocityX = 0;
+      bot.velocityZ = 0;
+    } else if ((combatTarget && hostileDistance <= 3.4) && directTargetDistance <= attackRange) {
       bot.group.lookAt(goalX, 1, goalZ);
       if (now >= bot.attackAt) botTakeHit(bot, combatTarget, now);
     } else if (goalPig && directTargetDistance <= 3.4) {
@@ -2476,10 +2547,17 @@ function updateHotbar() {
   updateHeldItem();
 }
 
+let lastTeamStatusSignature = null;
+
 function renderTeamStatus() {
+  const visibleTeams = activeTeams();
+  const signature = visibleTeams.map((team) =>
+    `${team.id}:${team.eliminated}:${team.pig.alive}`).join('|');
+  if (signature === lastTeamStatusSignature) return;
+  lastTeamStatusSignature = signature;
   const container = $('#team-status');
   container.innerHTML = '';
-  for (const team of activeTeams()) {
+  for (const team of visibleTeams) {
     const chip = document.createElement('span');
     chip.className = `team-chip${team.eliminated ? ' out' : ''}`;
     chip.dataset.teamId = team.id;
@@ -3012,10 +3090,17 @@ function frame() {
   fpsReportFrameCount += 1;
   const fpsReportNow = performance.now();
   if (fpsReportNow - fpsReportStartedAt >= 500) {
+    const sampledFps = Math.round(fpsReportFrameCount * 1000 / (fpsReportNow - fpsReportStartedAt));
+    const nextScale = nextRenderScale(adaptiveRenderScale, sampledFps);
+    if (nextScale !== adaptiveRenderScale) {
+      adaptiveRenderScale = nextScale;
+      renderer.setPixelRatio(adaptiveRenderScale);
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
     if (window.parent !== window) {
       window.parent.postMessage({
         type: 'void-pig-wars-fps',
-        fps: Math.round(fpsReportFrameCount * 1000 / (fpsReportNow - fpsReportStartedAt)),
+        fps: sampledFps,
       }, '*');
     }
     fpsReportStartedAt = fpsReportNow;

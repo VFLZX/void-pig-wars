@@ -61,6 +61,7 @@ SHOP_ITEMS = {
 DISABLED_SHOP_ITEMS = {"fireball", "bow", "arrows", "speed-potion", "pearl"}
 PICKUP_LIFETIME = 75.0
 ROOM_RESULT_LIFETIME = 30.0
+STATE_BROADCAST_INTERVAL = 0.1
 
 
 def finite_number(value):
@@ -82,11 +83,26 @@ class MatchServer:
         except ConnectionClosed:
             return
 
+    async def send_serialized(self, socket, payload):
+        if socket is None or socket.state is not State.OPEN:
+            return
+        try:
+            await socket.send(payload)
+        except ConnectionClosed:
+            return
+
     async def broadcast(self, room, message):
+        payload = json.dumps(message, separators=(",", ":"))
         await asyncio.gather(
-            *(self.send(player["socket"], message) for player in room["players"].values()),
+            *(self.send_serialized(player["socket"], payload) for player in room["players"].values()),
             return_exceptions=True,
         )
+
+    def state_broadcast_due(self, room, now):
+        if now - room["last_broadcast"] < STATE_BROADCAST_INTERVAL:
+            return False
+        room["last_broadcast"] = now
+        return True
 
     def public_player(self, player):
         return {
@@ -356,7 +372,6 @@ class MatchServer:
             inventory[resource] -= amount
         for field, amount in item["grant"].items():
             inventory[field] += amount
-        await self.broadcast(room, self.room_state(room))
 
     async def use_item(self, room, player, message):
         if not player["alive"]:
@@ -374,7 +389,6 @@ class MatchServer:
         inventory["apples"] -= 1
         player["health"] = min(100, player["health"] + 40)
         player["lastUse"] = now
-        await self.broadcast(room, self.room_state(room))
 
     async def handle_message(self, socket, message):
         connection = self.connections.get(socket)
@@ -450,7 +464,6 @@ class MatchServer:
         room["blocks"].append(block)
         player["inventory"]["blocks"] -= 1
         await self.broadcast(room, {"type": "block_placed", "block": block})
-        await self.broadcast(room, self.room_state(room))
 
     def spawn_pickup(self, room, team_id, resource, now):
         cap = 12 if team_id is None else (32 if resource == "iron" else 9)
@@ -551,21 +564,19 @@ class MatchServer:
                     del self.rooms[room_id]
                     continue
                 if room["winner"] is not None or room["finished_at"] is not None:
-                    if now - room["last_broadcast"] >= 0.05:
-                        room["last_broadcast"] = now
+                    if self.state_broadcast_due(room, now):
                         await self.broadcast(room, self.room_state(room))
                     continue
-                changed = self.generate_pickups(room, now) | self.update_pickups(room, now)
+                self.generate_pickups(room, now)
+                self.update_pickups(room, now)
                 for player in room["players"].values():
                     if (not player["alive"] and player["respawnAt"] > 0 and
                             now >= player["respawnAt"] and
                             room["pigs"][player["teamId"]]["health"] > 0):
                         x, z = TEAM_SPAWNS[player["teamId"]]
                         player.update(x=x, y=1.65, z=z, health=100, alive=True, respawnAt=0.0)
-                        changed = True
                 self.update_winner(room)
-                if now - room["last_broadcast"] >= 0.05 or changed:
-                    room["last_broadcast"] = now
+                if self.state_broadcast_due(room, now):
                     await self.broadcast(room, self.room_state(room))
             await asyncio.sleep(0.05)
 

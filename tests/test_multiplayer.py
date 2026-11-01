@@ -2,6 +2,7 @@ import asyncio
 import json
 import time
 import unittest
+from unittest.mock import patch
 
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
@@ -49,6 +50,39 @@ class MultiplayerServerTests(unittest.IsolatedAsyncioTestCase):
             message = json.loads(await asyncio.wait_for(socket.recv(), timeout=2))
             if message["type"] == message_type:
                 return message
+
+    async def test_room_snapshots_are_serialized_once_for_all_players(self):
+        first = QueueTestSocket()
+        second = QueueTestSocket()
+        room = {"players": {"first": {"socket": first}, "second": {"socket": second}}}
+        original_dumps = json.dumps
+
+        with patch("server.json.dumps", wraps=original_dumps) as dumps:
+            await self.app.broadcast(room, {"type": "state", "players": []})
+
+        self.assertEqual(dumps.call_count, 1)
+        self.assertEqual(first.messages, second.messages)
+
+    async def test_room_snapshot_interval_uses_fixed_ten_hz_limit(self):
+        room = {"last_broadcast": 10.0}
+
+        self.assertFalse(self.app.state_broadcast_due(room, 10.05))
+        self.assertTrue(self.app.state_broadcast_due(room, 10.101))
+        self.assertEqual(room["last_broadcast"], 10.101)
+        self.assertFalse(self.app.state_broadcast_due(room, 10.151))
+
+    async def test_room_snapshots_are_not_sent_more_than_ten_times_per_second(self):
+        first = await self.client("solo")
+        await self.receive_type(first, "waiting")
+        second = await self.client("solo")
+        await asyncio.gather(self.receive_type(first, "match_start"), self.receive_type(second, "match_start"))
+
+        received_at = []
+        for _ in range(3):
+            await self.receive_type(first, "state")
+            received_at.append(time.monotonic())
+
+        self.assertGreaterEqual(min(b - a for a, b in zip(received_at, received_at[1:])), 0.075)
 
     async def test_rejoining_same_queue_does_not_consume_another_slot(self):
         first = await self.client("solo")
@@ -194,6 +228,31 @@ class MultiplayerServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(hit["targetId"], victim["id"])
         self.assertEqual(hit["health"], 90)
         self.assertEqual(victim["health"], 90)
+
+    async def test_shop_purchase_reaches_other_players_in_a_room_snapshot(self):
+        first = await self.client("solo")
+        second = await self.client("solo")
+        first_start, second_start = await asyncio.gather(
+            self.receive_type(first, "match_start"),
+            self.receive_type(second, "match_start"),
+        )
+        room = self.app.rooms[first_start["roomId"]]
+        buyer = room["players"][first_start["playerId"]]
+        spawn_x, spawn_z = (-42.0, 0.0) if buyer["teamId"] == "green" else (42.0, 0.0)
+        buyer.update(x=spawn_x - 5, z=spawn_z + 5)
+        buyer["inventory"]["iron"] = 4
+
+        await self.app.buy(room, buyer, {"itemId": "blocks"})
+        replicated_buyer = None
+        for _ in range(3):
+            snapshot = await asyncio.wait_for(self.receive_type(second, "state"), timeout=0.25)
+            replicated_buyer = next(player for player in snapshot["players"] if player["id"] == buyer["id"])
+            if replicated_buyer["inventory"]["blocks"] == 80:
+                break
+
+        self.assertIsNotNone(replicated_buyer)
+        self.assertEqual(replicated_buyer["inventory"]["blocks"], 80)
+        self.assertEqual(replicated_buyer["inventory"]["iron"], 0)
 
     async def test_pig_hits_are_shared_and_team_scoped(self):
         first = await self.client("solo")
