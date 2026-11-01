@@ -22,6 +22,8 @@ const onlineMatchButton = $('#online-match-button');
 const multiplayerStatus = $('#multiplayer-status');
 const queueStatusPanel = $('#queue-status');
 const queueStatusCopy = $('#queue-status-copy');
+const queueStatusTitle = $('#queue-status-title');
+const cancelMatchmakingButton = $('#cancel-matchmaking');
 const touchControls = $('#touch-controls');
 const touchControlsToggle = $('#touch-controls-toggle');
 const touchControlsSettingsToggle = $('#touch-controls-settings');
@@ -887,12 +889,16 @@ function findOnlineMatch() {
   const serverUrl = multiplayerServerUrl();
   if (!serverUrl) {
     queueStatusPanel.classList.remove('hidden');
+    queueStatusTitle.textContent = 'ONLINE NOT CONFIGURED';
+    cancelMatchmakingButton.classList.add('hidden');
     multiplayerStatus.textContent = 'Online play is not configured yet. The game owner must set up the PC server address.';
     queueStatusCopy.textContent = multiplayerStatus.textContent;
     return;
   }
   onlineMatchButton.disabled = false;
   onlineMatchButton.textContent = 'CANCEL SEARCH';
+  queueStatusTitle.textContent = 'FINDING A GAME';
+  cancelMatchmakingButton.classList.remove('hidden');
   multiplayerStatus.textContent = 'Connecting to multiplayer server…';
   queueStatusPanel.classList.remove('hidden');
   try {
