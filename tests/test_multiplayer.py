@@ -8,7 +8,7 @@ from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
 from websockets.protocol import State
 
-from server import MatchServer
+from server import MatchServer, health_check
 
 
 class QueueTestSocket:
@@ -23,7 +23,7 @@ class QueueTestSocket:
 class MultiplayerServerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.app = MatchServer()
-        self.server = await serve(self.app.connection_handler, "127.0.0.1", 0)
+        self.server = await serve(self.app.connection_handler, "127.0.0.1", 0, process_request=health_check)
         self.port = self.server.sockets[0].getsockname()[1]
         self.tick_task = asyncio.create_task(self.app.tick())
         self.clients = []
@@ -50,6 +50,64 @@ class MultiplayerServerTests(unittest.IsolatedAsyncioTestCase):
             message = json.loads(await asyncio.wait_for(socket.recv(), timeout=2))
             if message["type"] == message_type:
                 return message
+
+    async def test_health_check_returns_ok(self):
+        reader, writer = await asyncio.open_connection("127.0.0.1", self.port)
+        writer.write(b"GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        await writer.drain()
+        response = await asyncio.wait_for(reader.read(), timeout=2)
+        writer.close()
+        await writer.wait_closed()
+
+        self.assertTrue(response.startswith(b"HTTP/1.1 200 OK"))
+        self.assertTrue(response.endswith(b"ok"))
+
+    async def test_movement_rejects_speed_and_vertical_teleports(self):
+        first = await self.client("solo")
+        second = await self.client("solo")
+        starts = await asyncio.gather(self.receive_type(first, "match_start"), self.receive_type(second, "match_start"))
+        room = self.app.rooms[starts[0]["roomId"]]
+        player = room["players"][starts[0]["playerId"]]
+        player.update(x=0.0, y=1.65, z=0.0, lastMove=time.monotonic())
+
+        await first.send(json.dumps({
+            "type": "move", "position": {"x": 1.2, "y": 1.65, "z": 0.0}, "yaw": 0.0,
+        }))
+        rejected_speed = await self.receive_type(first, "action_rejected")
+        self.assertEqual(rejected_speed["reason"], "movement_rejected")
+        self.assertEqual(player["x"], 0.0)
+
+        player["lastMove"] = time.monotonic()
+        await first.send(json.dumps({
+            "type": "move", "position": {"x": 0.0, "y": 4.0, "z": 0.0}, "yaw": 0.0,
+        }))
+        rejected_vertical = await self.receive_type(first, "action_rejected")
+        self.assertEqual(rejected_vertical["reason"], "movement_rejected")
+        self.assertEqual(player["y"], 1.65)
+
+    async def test_block_placement_requires_terrain_or_block_support(self):
+        first = await self.client("solo")
+        second = await self.client("solo")
+        starts = await asyncio.gather(self.receive_type(first, "match_start"), self.receive_type(second, "match_start"))
+        room = self.app.rooms[starts[0]["roomId"]]
+        player = room["players"][starts[0]["playerId"]]
+
+        await first.send(json.dumps({
+            "type": "block", "position": {"x": player["x"] + 1.5, "y": 5.0, "z": 0.5},
+        }))
+        rejected = await self.receive_type(first, "action_rejected")
+
+        self.assertEqual(rejected["reason"], "invalid_position")
+        self.assertEqual(room["blocks"], [])
+        self.assertEqual(player["inventory"]["blocks"], 48)
+
+    async def test_bridge_blocks_must_touch_an_existing_block(self):
+        room = {"blocks": [{"x": 20.0, "y": -0.25, "z": 20.0}]}
+
+        self.assertTrue(self.app.has_block_support(room, 20.5, -0.25, 20.0))
+        self.assertTrue(self.app.has_block_support(room, 20.0, 0.25, 20.0))
+        self.assertFalse(self.app.has_block_support(room, 21.0, -0.25, 20.0))
+        self.assertFalse(self.app.has_block_support(room, 20.0, 0.75, 20.0))
 
     async def test_room_snapshots_are_serialized_once_for_all_players(self):
         first = QueueTestSocket()

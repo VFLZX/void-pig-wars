@@ -62,6 +62,9 @@ DISABLED_SHOP_ITEMS = {"fireball", "bow", "arrows", "speed-potion", "pearl"}
 PICKUP_LIFETIME = 75.0
 ROOM_RESULT_LIFETIME = 30.0
 STATE_BROADCAST_INTERVAL = 0.1
+MAX_HORIZONTAL_SPEED = 12.0
+MAX_VERTICAL_SPEED = 10.0
+MOVEMENT_GRACE_DISTANCE = 0.5
 
 
 def finite_number(value):
@@ -422,8 +425,16 @@ class MatchServer:
             if abs(x) > 72 or abs(z) > 72 or y < -30 or y > 100:
                 return
             now = time.monotonic()
-            elapsed = max(0.05, now - player["lastMove"])
-            if math.dist((player["x"], player["z"]), (x, z)) > elapsed * 12 + 1.0:
+            elapsed = min(0.5, max(0.0, now - player["lastMove"]))
+            horizontal_distance = math.dist((player["x"], player["z"]), (x, z))
+            vertical_distance = abs(player["y"] - y)
+            if (horizontal_distance > elapsed * MAX_HORIZONTAL_SPEED + MOVEMENT_GRACE_DISTANCE or
+                    vertical_distance > elapsed * MAX_VERTICAL_SPEED + MOVEMENT_GRACE_DISTANCE):
+                await self.send(socket, {
+                    "type": "action_rejected",
+                    "reason": "movement_rejected",
+                    "position": {"x": player["x"], "y": player["y"], "z": player["z"]},
+                })
                 return
             player["x"], player["y"], player["z"] = x, y, z
             player["yaw"] = math.atan2(math.sin(yaw), math.cos(yaw))
@@ -460,10 +471,39 @@ class MatchServer:
         if any(abs(block["x"] - x) < 0.5 and abs(block["y"] - y) < 0.5 and
                abs(block["z"] - z) < 0.5 for block in room["blocks"]):
             return await self.reject_action(player["socket"], "invalid_position")
+        if not self.has_block_support(room, x, y, z):
+            return await self.reject_action(player["socket"], "invalid_position")
         block = {"x": x, "y": y, "z": z, "teamId": player["teamId"]}
         room["blocks"].append(block)
         player["inventory"]["blocks"] -= 1
         await self.broadcast(room, {"type": "block_placed", "block": block})
+
+    def has_block_support(self, room, x, y, z):
+        """Require a placed block to touch a terrain surface or an existing block."""
+        block_half = 0.25
+        bottom = y - block_half
+        top = y + block_half
+
+        surfaces = [(0.0, 0.0, 26.0, 26.0)] + [
+            (team_x, team_z, 24.0, 24.0) for team_x, team_z in TEAM_SPAWNS.values()
+        ]
+        for surface_x, surface_z, width, depth in surfaces:
+            overlaps_x = abs(x - surface_x) <= width / 2 + block_half
+            overlaps_z = abs(z - surface_z) <= depth / 2 + block_half
+            if overlaps_x and overlaps_z and (
+                    abs(bottom) <= 0.01 or abs(top) <= 0.01):
+                return True
+
+        for block in room["blocks"]:
+            delta_x = abs(x - block["x"])
+            delta_y = abs(y - block["y"])
+            delta_z = abs(z - block["z"])
+            if delta_x <= 0.5 and delta_z <= 0.5 and (
+                    delta_y <= 0.01 and
+                    (abs(delta_x - 0.5) <= 0.01 or abs(delta_z - 0.5) <= 0.01) or
+                    abs(delta_y - 0.5) <= 0.01):
+                return True
+        return False
 
     def spawn_pickup(self, room, team_id, resource, now):
         cap = 12 if team_id is None else (32 if resource == "iron" else 9)

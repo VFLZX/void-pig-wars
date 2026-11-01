@@ -27,14 +27,14 @@ A first-person voxel arena game set on floating islands beneath a bright, light-
 
 ### Remaining work, in priority order
 
-1. **Harden online movement and building.** The server currently checks reported movement bounds and speed, but not the full collision map. Make position, collision, fall, and block-placement validation authoritative before treating online matches as cheat-resistant.
+1. **Complete authoritative movement and building.** The server now rejects excessive horizontal and vertical movement and only accepts blocks supported by an island or another block. It still does not reproduce the complete browser collision map, so online movement is not cheat-resistant yet.
 2. **Improve online reliability.** Match state currently lives in memory, so a server restart ends active matches. Add reconnect handling and decide whether match persistence is needed; then validate deployment health, disconnects, and room cleanup under real use.
 3. **Bring more items online safely.** Bows, arrows, fireballs, ender pearls, and speed potions are disabled online until the server can validate their effects. Implement server-owned behavior and abuse limits before enabling them.
 4. **Polish presentation and controls.** Build on the current voxel-art look with clearer combat feedback, character and item animations, camera options, readable HUD/shop states, and more device/browser checks. Fix visual regressions as they are found.
 5. **Expand and balance gameplay.** Tune bot difficulty and match pacing through repeated play, improve map and bridge variety, and review resource rates and shop prices for each mode.
 6. **Prepare for community contributions.** Add a contribution guide, issue and pull-request templates, screenshots or a short gameplay clip, and a lightweight release checklist so new players and contributors can get started quickly.
 
-**Known limitations:** Online movement is not yet cheat-proof; the hosted multiplayer service is an early prototype with in-memory match state; and several shop items remain disabled online. See [Website and online multiplayer](#website-and-online-multiplayer) for details and setup.
+**Known limitations:** Online movement is not yet cheat-proof; the Render service must be created from the Blueprint before online play is hosted; free services can sleep after inactivity; match state is in memory; and several shop items remain disabled online. See [Website and online multiplayer](#website-and-online-multiplayer) for details and setup.
 
 ## Website and online multiplayer
 
@@ -72,7 +72,7 @@ Open <http://localhost:8000> in browser windows, select the same mode, and click
 
 ## Host the multiplayer server
 
-The repository includes a Render Blueprint in `render.yaml`. Create a Render Blueprint from the repository and deploy the `void-pig-wars-multiplayer` web service. The Blueprint sets `ALLOWED_ORIGINS` and the WebSocket port so the published Pages site can send game traffic to your hosted server.
+The repository includes a Render Blueprint in `render.yaml`, configured for Render's Free web-service plan. In Render, create a Blueprint instance from this repository and deploy `void-pig-wars-multiplayer`. The Blueprint sets `ALLOWED_ORIGINS`, checks `/healthz`, and lets Render supply the WebSocket port. Free services may sleep after inactivity, so the first matchmaking connection after a quiet period can take longer. Match state is held in memory and resets if the service restarts.
 
 ## Controls
 

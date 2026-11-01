@@ -2,3 +2,4 @@
 __pycache__/
 .test-dependencies/
 .tmp-websocket-test-deps/
+.tmp-websocket-test-deps*/

@@ -763,6 +763,12 @@ function handleMultiplayerMessage(message) {
   } else if (message.type === 'block_placed') {
     if (applyNetworkBlock(message.block)) networkBlockSyncIndex++;
   } else if (message.type === 'action_rejected') {
+    if (message.reason === 'movement_rejected' && message.position) {
+      camera.position.set(message.position.x, message.position.y, message.position.z);
+      state.velocityX = 0;
+      state.velocityY = 0;
+      state.velocityZ = 0;
+    }
     const messages = {
       already_owned: 'You already own that upgrade.',
       already_full_health: 'You are already at full health.',
@@ -774,6 +780,7 @@ function handleMultiplayerMessage(message) {
       not_alive: 'You cannot do that while knocked out.',
       out_of_range: 'Move closer to your team shop.',
       room_finished: 'This match has ended.',
+      movement_rejected: 'Movement was corrected by the server. Please reconnect if this keeps happening.',
       unavailable: 'You do not have that item.',
       unsupported_action: 'That item is disabled in online matches for now.',
     };
