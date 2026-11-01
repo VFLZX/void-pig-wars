@@ -1,4 +1,5 @@
 import * as THREE from './vendor/three.module.js';
+import { avatarPose, firstPersonAttackPose, shopkeeperIdlePose } from './animation-utils.mjs';
 
 const $ = (selector) => document.querySelector(selector);
 const canvas = $('#world');
@@ -7,6 +8,7 @@ const overlay = $('#overlay');
 const overlayTitle = $('#overlay-title');
 const overlayCopy = $('#overlay-copy');
 const startButton = $('#start-button');
+const returnLobbyButton = $('#return-lobby-button');
 const onlineMatchButton = $('#online-match-button');
 const multiplayerStatus = $('#multiplayer-status');
 const queueStatusPanel = $('#queue-status');
@@ -21,6 +23,8 @@ const shopPanel = $('#shop');
 const shopItems = $('#shop-items');
 const settingsPanel = $('#settings');
 const keys = new Set();
+const motionPreference = window.matchMedia?.('(prefers-reduced-motion: reduce)') ?? null;
+const reducedMotionEnabled = () => Boolean(motionPreference?.matches);
 let touchControlsEnabled = false;
 let joystickPointerId = null;
 let lookPointerId = null;
@@ -146,6 +150,9 @@ const pickups = [];
 const entities = [];
 const pigs = [];
 const arrows = new Set();
+const hitEffects = new Set();
+const hitSparkGeometry = new THREE.BoxGeometry(0.09, 0.09, 0.09);
+const hitSparkMaterial = new THREE.MeshBasicMaterial({ color: '#fff3b5' });
 const buildPreview = new THREE.Mesh(
   buildBlockGeometry,
   new THREE.MeshBasicMaterial({ color: '#5dffc0', transparent: true, opacity: 0.42, depthWrite: false }),
@@ -167,10 +174,21 @@ const teams = [
   { id: 'yellow', name: 'Yellow', color: '#ffd44f', dark: '#aa8120', x: 0, z: 42, bots: [], lastIronGen: 0, lastGoldGen: 0 },
 ];
 
+function largeTeamMode(size) {
+  return {
+    label: `${size}v${size}v${size}v${size}`,
+    activeTeams: teams.map((team) => team.id),
+    botCounts: Object.fromEntries(teams.map((team) => [team.id, size - (team.id === 'green' ? 1 : 0)])),
+  };
+}
+
 const matchModes = {
   solo: { label: '1v1', activeTeams: ['green', 'blue'], botCounts: { green: 0, blue: 1 } },
   doubles: { label: 'DOUBLES · 2v2', activeTeams: ['green', 'blue'], botCounts: { green: 1, blue: 2 } },
   ffa: { label: '1v1v1v1', activeTeams: ['green', 'blue', 'red', 'yellow'], botCounts: { green: 0, blue: 1, red: 1, yellow: 1 } },
+  '2v2v2v2': largeTeamMode(2),
+  '3v3v3v3': largeTeamMode(3),
+  '4v4v4v4': largeTeamMode(4),
 };
 
 function activeTeams() {
@@ -221,7 +239,10 @@ const state = {
   touchMoveY: 0,
   touchSneaking: false,
   touchJumpPressed: false,
+  lastHitAt: -Infinity,
+  lastLandingAt: -Infinity,
 };
+let attackAnimationStartedAt = -Infinity;
 
 const playerPosition = new THREE.Vector3(-42, 1.65, 0);
 camera.position.copy(playerPosition);
@@ -238,6 +259,41 @@ function makeMesh(geometry, material, parent, x = 0, y = 0, z = 0) {
   mesh.position.set(x, y, z);
   parent.add(mesh);
   return mesh;
+}
+
+function createAnimatedLeg(group, material, side) {
+  const pivot = new THREE.Group();
+  pivot.position.set(side * 0.24, 0.9, 0);
+  makeMesh(new THREE.BoxGeometry(0.3, 0.85, 0.35), material, pivot, 0, -0.43, 0);
+  group.add(pivot);
+  return pivot;
+}
+
+function createAvatarSword(group) {
+  const pivot = new THREE.Group();
+  pivot.position.set(0.58, 1.12, 0.08);
+  const blade = new THREE.MeshLambertMaterial({ color: '#d8e1e8', flatShading: true });
+  const edge = new THREE.MeshLambertMaterial({ color: '#8998a8', flatShading: true });
+  const handle = new THREE.MeshLambertMaterial({ color: '#684331', flatShading: true });
+  makeMesh(new THREE.BoxGeometry(0.13, 0.56, 0.09), blade, pivot, 0, 0.38, 0);
+  makeMesh(new THREE.BoxGeometry(0.34, 0.08, 0.13), edge, pivot, 0, 0.06, 0);
+  makeMesh(new THREE.BoxGeometry(0.11, 0.24, 0.11), handle, pivot, 0, -0.1, 0);
+  group.add(pivot);
+  return pivot;
+}
+
+function registerAvatarAnimation(group, body, leftLeg, rightLeg, swordPivot) {
+  return {
+    body,
+    bodyBaseY: body.position.y,
+    leftLeg,
+    rightLeg,
+    swordPivot,
+    lastX: group.position.x,
+    lastZ: group.position.z,
+    lastLandingAt: -Infinity,
+    wasGrounded: true,
+  };
 }
 
 function addWorldSurface(x, z, width, depth, top = 0, mesh = null, octagon = false) {
@@ -317,6 +373,8 @@ function createPig(team) {
 function createShopkeeper(team) {
   const group = new THREE.Group();
   group.position.set(team.x - 5, 0, team.z + 5);
+  const idle = { baseY: group.position.y, baseYaw: group.rotation.y, phase: Math.random() * Math.PI * 2 };
+  group.userData.idleAnimation = idle;
   const robe = new THREE.MeshLambertMaterial({ color: '#7253c8', flatShading: true });
   const skin = new THREE.MeshLambertMaterial({ color: '#d9a97e', flatShading: true });
   const hat = new THREE.MeshLambertMaterial({ color: '#302449', flatShading: true });
@@ -342,17 +400,22 @@ function createBot(team, slot = 0) {
   const color = new THREE.MeshLambertMaterial({ color: team.color, flatShading: true });
   const skin = new THREE.MeshLambertMaterial({ color: '#ddb38c', flatShading: true });
   const dark = new THREE.MeshLambertMaterial({ color: team.dark, flatShading: true });
-  makeMesh(new THREE.BoxGeometry(0.95, 1.05, 0.65), color, group, 0, 0.83, 0);
+  const body = makeMesh(new THREE.BoxGeometry(0.95, 1.05, 0.65), color, group, 0, 0.83, 0);
   makeMesh(new THREE.BoxGeometry(0.76, 0.68, 0.68), skin, group, 0, 1.68, 0);
   makeMesh(new THREE.BoxGeometry(0.28, 0.16, 0.08), new THREE.MeshBasicMaterial({ color: '#272134' }), group, -0.18, 1.73, 0.36);
   makeMesh(new THREE.BoxGeometry(0.28, 0.16, 0.08), new THREE.MeshBasicMaterial({ color: '#272134' }), group, 0.18, 1.73, 0.36);
-  for (const side of [-1, 1]) makeMesh(new THREE.BoxGeometry(0.3, 0.85, 0.35), dark, group, side * 0.4, 0.5, 0);
+  const leftLeg = createAnimatedLeg(group, dark, -1);
+  const rightLeg = createAnimatedLeg(group, dark, 1);
+  const swordPivot = createAvatarSword(group);
   const spawn = botHomePosition(team, slot);
   group.position.set(spawn.x, 0, spawn.z);
+  const animation = registerAvatarAnimation(group, body, leftLeg, rightLeg, swordPivot);
   addSpriteLabel(team.name.toUpperCase(), team.color, group, 0, 2.5, 0, 2.5);
   scene.add(group);
   const bot = {
-    team, slot, active: false, group, health: 100, maxHealth: 100, alive: true, respawnAt: 0, attackAt: 0, hitAt: 0,
+    team, slot, active: false, group, health: 100, maxHealth: 100, alive: true, respawnAt: 0,
+    attackAt: 0, lastAttackAt: -Infinity, hitAt: 0,
+    animation,
     objectiveType: null, objectiveTarget: null, objectiveKey: null, nextObjectiveAt: 0,
     route: null, routeIndex: 0, routeRevision: -1, routeNextPlanAt: 0,
     routeTargetX: 0, routeTargetZ: 0, routeObjectiveKey: null,
@@ -434,15 +497,17 @@ function createRemotePlayer(player) {
   const bodyMaterial = new THREE.MeshLambertMaterial({ color: team.color, flatShading: true });
   const skinMaterial = new THREE.MeshLambertMaterial({ color: '#ddb38c', flatShading: true });
   const darkMaterial = new THREE.MeshLambertMaterial({ color: team.dark, flatShading: true });
-  makeMesh(new THREE.BoxGeometry(0.95, 1.05, 0.65), bodyMaterial, group, 0, 0.83, 0);
+  const body = makeMesh(new THREE.BoxGeometry(0.95, 1.05, 0.65), bodyMaterial, group, 0, 0.83, 0);
   makeMesh(new THREE.BoxGeometry(0.76, 0.68, 0.68), skinMaterial, group, 0, 1.68, 0);
   makeMesh(new THREE.BoxGeometry(0.28, 0.16, 0.08),
     new THREE.MeshBasicMaterial({ color: '#272134' }), group, -0.18, 1.73, 0.36);
   makeMesh(new THREE.BoxGeometry(0.28, 0.16, 0.08),
     new THREE.MeshBasicMaterial({ color: '#272134' }), group, 0.18, 1.73, 0.36);
-  for (const side of [-1, 1]) {
-    makeMesh(new THREE.BoxGeometry(0.3, 0.85, 0.35), darkMaterial, group, side * 0.4, 0.5, 0);
-  }
+  const leftLeg = createAnimatedLeg(group, darkMaterial, -1);
+  const rightLeg = createAnimatedLeg(group, darkMaterial, 1);
+  const swordPivot = createAvatarSword(group);
+  group.position.set(player.x, player.y - 1.65, player.z);
+  const animation = registerAvatarAnimation(group, body, leftLeg, rightLeg, swordPivot);
   addSpriteLabel(player.name, team.color, group, 0, 2.5, 0, 2.8);
   scene.add(group);
   const remote = {
@@ -455,6 +520,9 @@ function createRemotePlayer(player) {
     alive: player.alive,
     connected: player.connected,
     targetPosition: new THREE.Vector3(player.x, player.y - 1.65, player.z),
+    animation,
+    hitAt: -Infinity,
+    lastAttackAt: -Infinity,
   };
   for (const child of group.children) child.userData.target = remote;
   remotePlayers.set(player.id, remote);
@@ -608,6 +676,7 @@ function beginOnlineMatch(message) {
   multiplayerStatus.textContent = `Connected to room ${onlineRoomId}.`;
   onlineMatchButton.textContent = 'IN ONLINE MATCH';
   onlineMatchButton.disabled = true;
+  returnLobbyButton.classList.add('hidden');
   updateTouchControlsVisibility();
   updateHotbar();
   applyNetworkState(message.state);
@@ -626,18 +695,32 @@ function handleMultiplayerMessage(message) {
     applyNetworkState(message);
   } else if (message.type === 'hit') {
     const attacker = remotePlayers.get(message.attackerId);
+    const hitAt = performance.now() / 1000;
+    if (attacker) attacker.lastAttackAt = hitAt;
     const targetName = message.targetType === 'pig'
       ? `${teams.find((team) => team.id === message.targetId)?.name || 'Team'} pig`
       : remotePlayers.get(message.targetId)?.team.name || 'player';
     if (message.attackerId === onlinePlayerId) showToast(`Hit ${targetName}! ${message.health} HP left.`);
-    if (message.targetId === onlinePlayerId && attacker) {
-      const source = message.attackerPosition || attacker.group.position;
-      const dx = camera.position.x - source.x;
-      const dz = camera.position.z - source.z;
-      const distance = Math.hypot(dx, dz) || 1;
-      state.velocityX += dx / distance * 3.5;
-      state.velocityZ += dz / distance * 3.5;
-      state.velocityY = Math.max(state.velocityY, 2.4);
+    if (message.targetId === onlinePlayerId) {
+      state.lastHitAt = hitAt;
+      if (attacker) {
+        const source = message.attackerPosition || attacker.group.position;
+        const dx = camera.position.x - source.x;
+        const dz = camera.position.z - source.z;
+        const distance = Math.hypot(dx, dz) || 1;
+        state.velocityX += dx / distance * 3.5;
+        state.velocityZ += dz / distance * 3.5;
+        state.velocityY = Math.max(state.velocityY, 2.4);
+      }
+    } else if (message.targetType === 'player') {
+      const target = remotePlayers.get(message.targetId);
+      if (target) {
+        target.hitAt = hitAt;
+        spawnHitEffect(target.group.position.clone().add(new THREE.Vector3(0, 1.05, 0)));
+      }
+    } else if (message.targetType === 'pig') {
+      const pig = teams.find((team) => team.id === message.targetId)?.pig;
+      if (pig?.group) spawnHitEffect(pig.group.position.clone().add(new THREE.Vector3(0, 1.1, 0)));
     }
   } else if (message.type === 'block_placed') {
     applyNetworkBlock(message.block);
@@ -683,6 +766,7 @@ function startWaitingArea() {
   camera.rotation.set(0, state.yaw, 0);
   for (const bot of entities) bot.group.visible = false;
   $('.match-picker').classList.add('hidden');
+  returnLobbyButton.classList.add('hidden');
   $('.online-controls').classList.add('hidden');
   overlay.classList.add('hidden');
   hud.classList.remove('hidden');
@@ -695,6 +779,13 @@ function startWaitingArea() {
 }
 
 function returnToLobby(status) {
+  if (onlineMatch) {
+    onlineMatch = false;
+    onlineRoomId = null;
+    const socket = multiplayerSocket;
+    multiplayerSocket = null;
+    socket?.close();
+  }
   if (hasGamePointerLock()) document.exitPointerLock?.();
   keys.clear();
   state.mode = 'menu';
@@ -721,6 +812,8 @@ function returnToLobby(status) {
   updateStartButtonLabel();
   onlineMatchButton.disabled = false;
   onlineMatchButton.textContent = 'FIND A GAME';
+  onlineMatchButton.classList.remove('hidden');
+  returnLobbyButton.classList.add('hidden');
   multiplayerStatus.textContent = status;
   updateTouchControlsVisibility();
   onlineMatchButton.focus();
@@ -791,6 +884,7 @@ function findOnlineMatch() {
       $('.match-picker').classList.add('hidden');
       queueStatusPanel.classList.add('hidden');
       startButton.textContent = 'REFRESH';
+      returnLobbyButton.classList.remove('hidden');
       onlineMatchButton.classList.add('hidden');
       overlay.classList.remove('hidden');
       multiplayerStatus.textContent = 'Disconnected from the online match.';
@@ -823,8 +917,7 @@ function createWorld() {
     team.generator = generator;
     team.pig = createPig(team);
     team.shop = createShopkeeper(team);
-    createBot(team, 0);
-    if (team.id === 'green' || team.id === 'blue') createBot(team, 1);
+    for (let slot = 0; slot < 4; slot++) createBot(team, slot);
   }
   createSkyClouds();
   createDecorations();
@@ -876,8 +969,15 @@ function spawnPickup(resource, x, z, amount, color, y = 0.55, teamId = null, id 
 function updatePickups(time, delta) {
   for (let i = pickups.length - 1; i >= 0; i--) {
     const pickup = pickups[i];
-    pickup.mesh.rotation.y += delta * 1.6;
-    pickup.mesh.position.y = pickup.startY + Math.sin(time * 2.8 + pickup.phase) * 0.12;
+    if (reducedMotionEnabled()) {
+      pickup.mesh.rotation.y = 0;
+      pickup.mesh.position.y = pickup.startY;
+      pickup.mesh.scale.setScalar(1);
+    } else {
+      pickup.mesh.rotation.y += delta * 1.6;
+      pickup.mesh.position.y = pickup.startY + Math.sin(time * 2.8 + pickup.phase) * 0.12;
+      pickup.mesh.scale.setScalar(1 + Math.sin(time * 4 + pickup.phase) * 0.045);
+    }
     if (!pickup.serverManaged && !onlineMatch && pickup.mesh.position.distanceTo(camera.position) < 1.8) {
       state.player[pickup.resource] += pickup.amount;
       updateResources();
@@ -1174,6 +1274,7 @@ function attack(fromKeyboard = false) {
   const now = performance.now() / 1000;
   if (now - state.lastAttack < 0.48) return;
   state.lastAttack = now;
+  attackAnimationStartedAt = now;
   const target = getAimTarget();
   if (!target || target.team?.id === localTeamId) return;
   if (onlineMatch) {
@@ -1231,6 +1332,7 @@ function updatePigBar(target) {
 function damagePig(pig, amount, attacker) {
   if (!pig.alive) return;
   pig.health = Math.max(0, pig.health - amount);
+  spawnHitEffect(pig.group.position.clone().add(new THREE.Vector3(0, 1.1, 0)));
   updatePigBar(pig);
   showToast(`${attacker} damaged ${pig.team.name}'s pig! (${pig.health} HP)`);
   if (pig.health <= 0) {
@@ -1294,6 +1396,7 @@ function endGame(won, draw = false) {
   overlayCopy.textContent = draw ? 'Every team was eliminated at the same time.'
     : won ? 'All rival teams are out. The void is yours.' : 'Your pig is gone, and your last life was spent.';
   startButton.textContent = 'PLAY AGAIN';
+  returnLobbyButton.classList.remove('hidden');
   $('.online-controls').classList.add('hidden');
   updateTouchControlsVisibility();
   overlay.classList.remove('hidden');
@@ -1313,6 +1416,7 @@ function spawnPlayer() {
 
 function hurtPlayer(amount, sourceX = camera.position.x, sourceZ = camera.position.z) {
   if (!state.alive || state.mode !== 'playing') return;
+  state.lastHitAt = performance.now() / 1000;
   state.health = Math.max(0, state.health - Math.ceil(amount * (1 - state.player.armor)));
   const awayX = camera.position.x - sourceX;
   const awayZ = camera.position.z - sourceZ;
@@ -1363,6 +1467,7 @@ function movePlayer(delta) {
     if (!onlineMatch && performance.now() / 1000 >= state.respawnAt && playerTeam().pig.alive) spawnPlayer();
     return;
   }
+  const wasGrounded = state.onGround;
   const forwardInput = (keys.has(bindings.forward) ? 1 : 0) - (keys.has(bindings.back) ? 1 : 0) + state.touchMoveY;
   const sideInput = (keys.has(bindings.right) ? 1 : 0) - (keys.has(bindings.left) ? 1 : 0) + state.touchMoveX;
   const inputLength = Math.hypot(forwardInput, sideInput) || 1;
@@ -1411,6 +1516,7 @@ function movePlayer(delta) {
     state.velocityY = 0;
     state.onGround = true;
   } else state.onGround = false;
+  if (!wasGrounded && state.onGround) state.lastLandingAt = performance.now() / 1000;
   if (!onlineMatch && camera.position.y < -24) {
     hurtPlayer(100);
     if (state.alive) {
@@ -1773,6 +1879,7 @@ function botBuildAhead(bot, directionX, directionZ, skipForJump = false) {
 
 function botTakeHit(bot, target, now) {
   bot.attackAt = now + 1.05;
+  bot.lastAttackAt = now;
   if (target.kind === 'player') {
     hurtPlayer(13, bot.group.position.x, bot.group.position.z);
     return;
@@ -1783,6 +1890,7 @@ function botTakeHit(bot, target, now) {
   }
   target.health = Math.max(0, target.health - Math.ceil(bot.weapon * (1 - (target.armor || 0))));
   target.hitAt = now;
+  spawnHitEffect(target.group.position.clone().add(new THREE.Vector3(0, 1.05, 0)));
   knockbackBot(target, bot.group.position.x, bot.group.position.z, 4);
   if (target.health === 0) knockOutBot(target, now);
 }
@@ -2080,6 +2188,82 @@ function moveBots(delta, now) {
     }
     if (bot.hitAt && now - bot.hitAt > 0.13) bot.group.position.y = pos.y;
   }
+}
+
+function updateAvatarAnimation(entity, time, delta, grounded) {
+  const animation = entity.animation;
+  if (!animation || !entity.group.visible) return;
+  const dx = entity.group.position.x - animation.lastX;
+  const dz = entity.group.position.z - animation.lastZ;
+  const speed = delta > 0 ? Math.hypot(dx, dz) / delta : 0;
+  animation.lastX = entity.group.position.x;
+  animation.lastZ = entity.group.position.z;
+  if (!animation.wasGrounded && grounded) animation.lastLandingAt = time;
+  animation.wasGrounded = grounded;
+
+  const pose = avatarPose(time, speed, grounded, time - animation.lastLandingAt,
+    time - (entity.hitAt ?? -Infinity), reducedMotionEnabled());
+  const swordPose = firstPersonAttackPose(time - (entity.lastAttackAt ?? -Infinity), reducedMotionEnabled());
+  animation.leftLeg.rotation.x = pose.leftLeg;
+  animation.rightLeg.rotation.x = pose.rightLeg;
+  animation.swordPivot.rotation.set(swordPose.rotationX, swordPose.rotationY, 0);
+  animation.body.position.y = animation.bodyBaseY + pose.bodyBob + pose.bodySquash * 0.35;
+  animation.body.scale.y = 1 - pose.bodySquash;
+  animation.body.rotation.x = pose.hitTilt;
+}
+
+function spawnHitEffect(position) {
+  if (reducedMotionEnabled() || !position) return;
+  const group = new THREE.Group();
+  group.position.copy(position);
+  for (let index = 0; index < 6; index++) {
+    const angle = (index / 6) * Math.PI * 2;
+    const spark = new THREE.Mesh(hitSparkGeometry, hitSparkMaterial);
+    spark.position.set(Math.cos(angle) * 0.22, (index % 2) * 0.12, Math.sin(angle) * 0.22);
+    group.add(spark);
+  }
+  scene.add(group);
+  hitEffects.add({ group, age: 0 });
+}
+
+function updateHitEffects(delta) {
+  for (const effect of hitEffects) {
+    effect.age += delta;
+    if (effect.age >= 0.24) {
+      scene.remove(effect.group);
+      hitEffects.delete(effect);
+      continue;
+    }
+    const progress = effect.age / 0.24;
+    effect.group.scale.setScalar(1 - progress * 0.82);
+    effect.group.position.y += delta * 0.22;
+    effect.group.rotation.y += delta * 4;
+  }
+}
+
+function updateVisualAnimations(time, delta) {
+  const reducedMotion = reducedMotionEnabled();
+  const playerPose = avatarPose(time, Math.hypot(state.velocityX, state.velocityZ), state.onGround,
+    time - state.lastLandingAt, time - state.lastHitAt, reducedMotion);
+  const attackPose = firstPersonAttackPose(time - attackAnimationStartedAt, reducedMotion);
+  heldItem.position.set(0.43, -0.42 + playerPose.bodyBob - playerPose.bodySquash * 0.12, -0.82 + attackPose.offsetZ);
+  heldItem.rotation.set(-0.18 + attackPose.rotationX + playerPose.hitTilt,
+    -0.25 + attackPose.rotationY, -0.36 + playerPose.bodySquash * 0.6);
+
+  for (const entity of entities) updateAvatarAnimation(entity, time, delta, entity.onGround);
+  for (const remote of remotePlayers.values()) {
+    const grounded = Math.abs(remote.group.position.y - remote.targetPosition.y) < 0.12;
+    updateAvatarAnimation(remote, time, delta, grounded);
+  }
+  for (const team of teams) {
+    const shop = team.shop;
+    const idle = shop?.userData.idleAnimation;
+    if (!shop || !idle) continue;
+    const pose = shopkeeperIdlePose(time, idle.phase, reducedMotion);
+    shop.position.y = idle.baseY + pose.bob;
+    shop.rotation.y = idle.baseYaw + pose.yaw;
+  }
+  updateHitEffects(delta);
 }
 
 function useItem() {
@@ -2532,6 +2716,7 @@ function startGame() {
   if (state.mode === 'won' || state.mode === 'lost') window.location.reload();
   state.started = true;
   state.mode = 'playing';
+  returnLobbyButton.classList.add('hidden');
   $('.match-picker').classList.add('hidden');
   $('.online-controls').classList.add('hidden');
   queueStatusPanel.classList.add('hidden');
@@ -2728,6 +2913,7 @@ document.addEventListener('wheel', (event) => {
   updateHotbar();
 }, { passive: true });
 startButton.addEventListener('click', startGame);
+returnLobbyButton.addEventListener('click', () => returnToLobby('Back in the lobby. Choose a mode to play.'));
 onlineMatchButton.addEventListener('click', findOnlineMatch);
 for (const button of document.querySelectorAll('[data-match-mode]')) {
   button.addEventListener('click', () => {
@@ -2821,6 +3007,7 @@ function frame() {
   for (const remote of remotePlayers.values()) {
     remote.group.position.lerp(remote.targetPosition, Math.min(1, delta * 14));
   }
+  updateVisualAnimations(time, delta);
   renderer.render(scene, camera);
   fpsReportFrameCount += 1;
   const fpsReportNow = performance.now();

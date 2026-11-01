@@ -5,8 +5,18 @@ import unittest
 
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
+from websockets.protocol import State
 
 from server import MatchServer
+
+
+class QueueTestSocket:
+    def __init__(self):
+        self.state = State.OPEN
+        self.messages = []
+
+    async def send(self, message):
+        self.messages.append(message)
 
 
 class MultiplayerServerTests(unittest.IsolatedAsyncioTestCase):
@@ -39,6 +49,103 @@ class MultiplayerServerTests(unittest.IsolatedAsyncioTestCase):
             message = json.loads(await asyncio.wait_for(socket.recv(), timeout=2))
             if message["type"] == message_type:
                 return message
+
+    async def test_rejoining_same_queue_does_not_consume_another_slot(self):
+        first = await self.client("solo")
+        initial_wait = await self.receive_type(first, "waiting")
+        self.assertEqual(initial_wait["players"], 1)
+
+        await first.send(json.dumps({"type": "join", "mode": "solo"}))
+        duplicate_wait = await self.receive_type(first, "waiting")
+        self.assertEqual(duplicate_wait["players"], 1)
+
+        second = await self.client("solo")
+        starts = await asyncio.gather(
+            self.receive_type(first, "match_start"),
+            self.receive_type(second, "match_start"),
+        )
+        self.assertEqual(len({start["playerId"] for start in starts}), 2)
+        self.assertEqual(len({start["roomId"] for start in starts}), 1)
+
+    async def test_waiting_socket_cannot_switch_match_modes(self):
+        socket = await self.client("solo")
+        await self.receive_type(socket, "waiting")
+
+        await socket.send(json.dumps({"type": "join", "mode": "ffa"}))
+        response = json.loads(await asyncio.wait_for(socket.recv(), timeout=2))
+
+        self.assertEqual(response["type"], "error")
+        self.assertEqual(response["message"], "This connection is already queued for solo.")
+        self.assertEqual(len(self.app.queues["solo"]), 1)
+        self.assertEqual(len(self.app.queues["ffa"]), 0)
+
+    async def test_rejoining_queue_prunes_disconnected_players_first(self):
+        first = QueueTestSocket()
+        stale = QueueTestSocket()
+        await self.app.handle_message(first, {"type": "join", "mode": "doubles"})
+        await self.app.handle_message(stale, {"type": "join", "mode": "doubles"})
+        stale.state = State.CLOSED
+
+        await self.app.handle_message(first, {"type": "join", "mode": "doubles"})
+
+        waiting = json.loads(first.messages[-1])
+        self.assertEqual(waiting["type"], "waiting")
+        self.assertEqual(waiting["players"], 1)
+        self.assertEqual([player["socket"] for player in self.app.queues["doubles"]], [first])
+
+    async def test_disconnect_from_queue_frees_a_matchmaking_slot(self):
+        abandoned = await self.client("solo")
+        await self.receive_type(abandoned, "waiting")
+        await abandoned.close()
+        await asyncio.sleep(0.05)
+        self.assertEqual(len(self.app.queues["solo"]), 0)
+
+        first = await self.client("solo")
+        self.assertEqual((await self.receive_type(first, "waiting"))["players"], 1)
+        second = await self.client("solo")
+        starts = await asyncio.gather(
+            self.receive_type(first, "match_start"),
+            self.receive_type(second, "match_start"),
+        )
+        self.assertEqual(len({start["playerId"] for start in starts}), 2)
+
+    async def test_ffa_waits_for_four_players_and_assigns_each_team_once(self):
+        clients = [await self.client("ffa") for _ in range(3)]
+        waiting = [await self.receive_type(client, "waiting") for client in clients]
+        self.assertEqual([message["players"] for message in waiting], [1, 2, 3])
+
+        fourth = await self.client("ffa")
+        clients.append(fourth)
+        starts = await asyncio.gather(*(self.receive_type(client, "match_start") for client in clients))
+
+        self.assertEqual(len({start["roomId"] for start in starts}), 1)
+        self.assertEqual(
+            {team: sum(start["teamId"] == team for start in starts) for team in ("green", "blue", "red", "yellow")},
+            {"green": 1, "blue": 1, "red": 1, "yellow": 1},
+        )
+
+    async def test_large_team_modes_fill_capacity_and_balance_four_teams(self):
+        for mode, players_per_team in (("2v2v2v2", 2), ("3v3v3v3", 3), ("4v4v4v4", 4)):
+            with self.subTest(mode=mode):
+                capacity = players_per_team * 4
+                app = MatchServer()
+                clients = [QueueTestSocket() for _ in range(capacity)]
+                for player_count, client in enumerate(clients[:-1], start=1):
+                    await app.handle_message(client, {"type": "join", "mode": mode})
+                    waiting = json.loads(client.messages[-1])
+                    self.assertEqual((waiting["players"], waiting["needed"]), (player_count, capacity))
+                await app.handle_message(clients[-1], {"type": "join", "mode": mode})
+                starts = [
+                    next(json.loads(message) for message in reversed(client.messages)
+                         if json.loads(message)["type"] == "match_start")
+                    for client in clients
+                ]
+                self.assertEqual(len({start["roomId"] for start in starts}), 1)
+                self.assertEqual(
+                    {team: sum(start["teamId"] == team for start in starts)
+                     for team in ("green", "blue", "red", "yellow")},
+                    {team: players_per_team for team in ("green", "blue", "red", "yellow")},
+                )
 
     async def test_solo_clients_share_movement_and_authoritative_combat(self):
         first = await self.client("solo")

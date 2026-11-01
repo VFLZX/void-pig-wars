@@ -1,0 +1,4 @@
+# Local test and Python runtime artifacts
+__pycache__/
+.test-dependencies/
+.tmp-websocket-test-deps/

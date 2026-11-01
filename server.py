@@ -24,6 +24,11 @@ MODE_TEAMS = {
     "solo": ["green", "blue"],
     "doubles": ["green", "green", "blue", "blue"],
     "ffa": ["green", "blue", "red", "yellow"],
+    "2v2v2v2": ["green", "green", "blue", "blue", "red", "red", "yellow", "yellow"],
+    "3v3v3v3": ["green", "green", "green", "blue", "blue", "blue",
+                 "red", "red", "red", "yellow", "yellow", "yellow"],
+    "4v4v4v4": ["green", "green", "green", "green", "blue", "blue", "blue", "blue",
+                 "red", "red", "red", "red", "yellow", "yellow", "yellow", "yellow"],
 }
 PIG_OFFSETS = {
     "green": (-3.0, 0.0),
@@ -186,6 +191,24 @@ class MatchServer:
             })
 
     async def join(self, socket, mode):
+        for queued_mode, queued_players in self.queues.items():
+            remaining = [player for player in queued_players if player["socket"].state is State.OPEN]
+            if len(remaining) != len(queued_players):
+                self.queues[queued_mode][:] = remaining
+                if remaining:
+                    await self.update_waiting(queued_mode)
+
+        for queued_mode, queued_players in self.queues.items():
+            if any(player["socket"] is socket for player in queued_players):
+                if queued_mode == mode:
+                    await self.update_waiting(queued_mode)
+                else:
+                    await self.send(socket, {
+                        "type": "error",
+                        "message": f"This connection is already queued for {queued_mode}.",
+                    })
+                return
+
         queue = self.queues[mode]
         player = {
             "id": uuid.uuid4().hex[:12],
@@ -194,7 +217,6 @@ class MatchServer:
         }
         self.next_player_number += 1
         queue.append(player)
-        await self.update_waiting(mode)
 
         capacity = len(MODE_TEAMS[mode])
         while len(queue) >= capacity:
